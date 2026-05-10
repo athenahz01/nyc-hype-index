@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --paper: #f4ede1;
+    --paper-2: #ebe1cf;
+    --ink: #141210;
+    --ink-soft: #2a2622;
+    --rule: #1a1714;
+    --red: #d2331f;
+    --red-deep: #a8270f;
+    --gold: #b8893a;
+    --muted: #6e655a;
+    --shadow: rgba(20, 18, 16, 0.08);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Inter Tight", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(20, 18, 16, 0.015) 0%, transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(20, 18, 16, 0.02) 0%, transparent 40%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0 0.06 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  ::selection {
+    background: var(--red);
+    color: var(--paper);
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 144;
+  }
+  .font-mono {
+    font-family: "JetBrains Mono", monospace;
+  }
+  .font-sans {
+    font-family: "Inter Tight", system-ui, sans-serif;
+  }
+}
+
+/* === LIVE PULSE === */
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: var(--red);
+  border-radius: 50%;
+  margin-right: 6px;
+  animation: pulse 2s ease-in-out infinite;
+  transform: translateY(-1px);
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* === HERO STRIPES === */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 80px,
+    rgba(20, 18, 16, 0.012) 80px,
+    rgba(20, 18, 16, 0.012) 81px
+  );
+  pointer-events: none;
+}
+
+/* === ROW HOVER === */
+.row {
+  transition: background 0.2s ease;
+}
+.row:hover {
+  background: rgba(20, 18, 16, 0.025);
+}
+.row:hover .row-name {
+  color: var(--red);
+}
+
+/* === BAR ANIMATION === */
+.bar-fill {
+  transform-origin: left;
+  animation: barSlide 1s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes barSlide {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* === VERDICT QUOTES === */
+.verdict::before {
+  content: "\201C";
+  color: var(--red);
+  font-size: 22px;
+  line-height: 0;
+  margin-right: 2px;
+  position: relative;
+  top: 4px;
+}
+.verdict::after {
+  content: "\201D";
+  color: var(--red);
+  font-size: 22px;
+  line-height: 0;
+  margin-left: 1px;
+  position: relative;
+  top: 4px;
+}
+
+/* === ROW FADE-IN === */
+.row-fade {
+  opacity: 0;
+  animation: rowFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes rowFade {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
