@@ -163,7 +163,23 @@ Return ONLY the sentence, nothing else.`,
   });
 
   const text = message.content[0].type === "text" ? message.content[0].text : "";
-  return text.trim().replace(/^["']|["']$/g, "").slice(0, 200);
+  return cleanVerdict(text);
+}
+
+/**
+ * Post-process a verdict to fix common Claude artifacts:
+ *   - Strip wrapping quotes
+ *   - Fix "friend fish/chicken/etc." → "fried [same]" (a recurring Claude typo)
+ *   - Fix double spaces
+ *   - Cap length at 200 chars
+ */
+function cleanVerdict(raw: string): string {
+  let v = raw.trim().replace(/^["']|["']$/g, "");
+  // Common typo: "friend X" should be "fried X" when X is a food
+  v = v.replace(/\bfriend\b(\s+(?:fish|chicken|rice|noodle|noodles|tofu|pork|shrimp|egg|eggs|dumpling|dumplings|ravioli|calamari))/gi, "fried$1");
+  // Collapse double spaces from any of our regex replacements
+  v = v.replace(/\s+/g, " ").trim();
+  return v.slice(0, 200);
 }
 
 /**

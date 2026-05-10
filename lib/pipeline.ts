@@ -1,30 +1,23 @@
 /**
- * Pipeline: create a new weekly issue from scratch.
+ * Pipeline v1.5 — global z-score normalization with per-occasion filtering.
  *
- * Each restaurant is scored ONCE (one set of API calls, one set of Claude
- * sentiment scores) but appears in MULTIPLE occasion leaderboards. The
- * normalization happens per-occasion so a restaurant's rank can differ
- * between its leaderboards (e.g. Carbone is #1 in date-night but #4 in
- * group-dinner).
- *
- * Steps:
- *   1. Pull active restaurants
- *   2. Score each one (TikTok, IG, Google, Reddit + Claude sentiment)
- *      — produces absolute hype/reality
- *   3. For each occasion:
- *        - filter to restaurants tagged for that occasion
- *        - normalize hype/reality across that subset
- *        - generate per-occasion verdict
- *        - rank by gap
- *   4. Write rows to `occasion_scores`
+ * Flow:
+ *   1. Score each restaurant (TikTok views + sentiment, IG, Google + volume,
+ *      Reddit if reliable). Produces absolute hype/reality scores.
+ *   2. Normalize ONCE across the entire issue using z-scores. Hype and
+ *      Reality become comparable across all occasions.
+ *   3. For each occasion: filter to its restaurants, exclude |gap| < 10
+ *      (the "calibrated middle"), sort by gap, generate verdicts.
+ *   4. Write to occasion_scores. Write a per-restaurant entry to
+ *      restaurant_scores too (for consistency/debugging).
  */
 
 import { createAdminClient } from "./supabase";
 import {
   scoreRestaurant,
   generateVerdictForScore,
-  normalizeHypeAcrossIssue,
-  normalizeRealityAcrossIssue,
+  normalizeIssue,
+  GAP_THRESHOLD,
   type ScoreResult,
 } from "./scoring";
 import type { Restaurant, Trend, Occasion } from "./types";
@@ -36,6 +29,7 @@ export type RefreshResult = {
   scored: number;
   failed: number;
   occasionsBuilt: number;
+  totalRankings: number;
 };
 
 export async function runRefresh(
@@ -60,7 +54,7 @@ export async function runRefresh(
     `[pipeline] scoring ${targetList.length} restaurants${opts.limit ? ` (limit=${opts.limit})` : ""}`
   );
 
-  // === 2. Score each (sequential) ===
+  // === 2. Score each (sequential to respect rate limits) ===
   type ScoredEntry = { restaurant: Restaurant; score: ScoreResult };
   const scored: ScoredEntry[] = [];
   const failures: { name: string; error: string }[] = [];
@@ -79,7 +73,30 @@ export async function runRefresh(
     throw new Error(`all ${targetList.length} restaurants failed — see logs`);
   }
 
-  // === 3. Issue number ===
+  // === 3. GLOBAL z-score normalization ===
+  // This is the crucial v1.5 change: hype/reality are now comparable
+  // across all occasions, not normalized per-occasion.
+  const normalized = normalizeIssue(
+    scored.map((s) => ({
+      restaurant_id: s.restaurant.id,
+      absolute_hype: s.score.hype_score,
+      absolute_reality: s.score.reality_score,
+    }))
+  );
+  const normMap = new Map(normalized.map((n) => [n.restaurant_id, n]));
+
+  // Apply normalized values back onto entries
+  for (const entry of scored) {
+    const norm = normMap.get(entry.restaurant.id);
+    if (norm) {
+      entry.score.hype_score = norm.hype_normalized;
+      entry.score.reality_score = norm.reality_normalized;
+      entry.score.gap = norm.gap_normalized;
+      entry.score.is_underrated = norm.gap_normalized < -GAP_THRESHOLD;
+    }
+  }
+
+  // === 4. Issue metadata ===
   const { data: lastIssue } = await supabase
     .from("issues")
     .select("number")
@@ -88,12 +105,11 @@ export async function runRefresh(
     .maybeSingle();
   const newIssueNumber = (lastIssue?.number ?? 0) + 1;
 
-  // === 4. Aggregate stats for the issue stat bar ===
   const total_tiktok_views = scored.reduce((s, e) => s + e.score.tiktok_views, 0);
   const total_ig_posts = scored.reduce((s, e) => s + e.score.ig_posts, 0);
   const total_reviews = scored.reduce((s, e) => s + e.score.google_reviews + e.score.reddit_mentions, 0);
 
-  // === 5. Look up previous issue for trend computation ===
+  // === 5. Trend lookup against previous issue ===
   const { data: prevIssue } = await supabase
     .from("issues")
     .select("id, number")
@@ -102,7 +118,6 @@ export async function runRefresh(
     .limit(1)
     .maybeSingle();
 
-  // Map prev (occasion, restaurant_id) → rank for trend deltas
   const prevRanks: Map<string, number> = new Map();
   if (prevIssue) {
     const { data: prev } = await supabase
@@ -144,7 +159,7 @@ export async function runRefresh(
 
   if (issueErr || !issueRow) throw new Error(`insert issue: ${issueErr?.message}`);
 
-  // === 7. For each occasion, build a per-occasion leaderboard ===
+  // === 7. Per-occasion leaderboards ===
   const occasionRows: any[] = [];
   let occasionsBuilt = 0;
 
@@ -152,96 +167,85 @@ export async function runRefresh(
     // Filter to restaurants tagged for this occasion
     const inOccasion = scored.filter((s) => s.restaurant.occasions.includes(occasion));
 
-    // Skip occasions with too few entries
-    if (inOccasion.length < 3) {
-      console.log(`[pipeline] skipping ${occasion} — only ${inOccasion.length} restaurants tagged`);
+    // Filter out the calibrated middle (|gap| < threshold) — these aren't
+    // interesting either way and produce contradictory verdicts.
+    const significant = inOccasion.filter((s) => Math.abs(s.score.gap) >= GAP_THRESHOLD);
+
+    if (significant.length < 3) {
+      console.log(
+        `[pipeline] skipping ${occasion} — only ${significant.length} restaurants past threshold ` +
+        `(${inOccasion.length} tagged total, but most are calibrated)`
+      );
       continue;
     }
 
-    console.log(`[pipeline] building ${occasion} leaderboard (${inOccasion.length} restaurants)`);
-
-    // Normalize hype + reality WITHIN this occasion's subset
-    const hypeMap = normalizeHypeAcrossIssue(
-      inOccasion.map((s) => ({ restaurant_id: s.restaurant.id, absolute_hype: s.score.hype_score }))
-    );
-    const realityMap = normalizeRealityAcrossIssue(
-      inOccasion.map((s) => ({
-        restaurant_id: s.restaurant.id,
-        absolute_reality: s.score.reality_score,
-      }))
+    console.log(
+      `[pipeline] building ${occasion}: ${significant.length} significant entries ` +
+      `(${inOccasion.length - significant.length} calibrated/filtered)`
     );
 
-    // Build per-occasion entries with normalized scores
-    type OccasionEntry = {
-      entry: ScoredEntry;
-      hype: number;
-      reality: number;
-      gap: number;
-      isUnderrated: boolean;
-      verdict: string;
-    };
-    const entries: OccasionEntry[] = [];
-
-    for (const s of inOccasion) {
-      const hype = hypeMap.get(s.restaurant.id) ?? s.score.hype_score;
-      const reality = realityMap.get(s.restaurant.id) ?? s.score.reality_score;
-      const gap = hype - reality;
-      const isUnderrated = gap < -8;
-      entries.push({
-        entry: s,
-        hype: Math.round(hype * 100) / 100,
-        reality: Math.round(reality * 100) / 100,
-        gap: Math.round(gap * 100) / 100,
-        isUnderrated,
-        verdict: "", // populated below
+    // Generate verdicts using the globally-normalized scores
+    type EntryWithVerdict = { entry: ScoredEntry; verdict: string };
+    const withVerdicts: EntryWithVerdict[] = [];
+    for (const e of significant) {
+      const verdict = await generateVerdictForScore({
+        restaurant: { name: e.restaurant.name, neighborhood: e.restaurant.neighborhood },
+        finalHype: e.score.hype_score,
+        finalReality: e.score.reality_score,
+        finalGap: e.score.gap,
+        isUnderrated: e.score.is_underrated,
+        debug: e.score.debug,
       });
+      withVerdicts.push({ entry: e, verdict });
     }
 
-    // Generate verdicts for this occasion using its FINAL normalized scores
-    for (const e of entries) {
-      e.verdict = await generateVerdictForScore({
-        restaurant: { name: e.entry.restaurant.name, neighborhood: e.entry.restaurant.neighborhood },
-        finalHype: e.hype,
-        finalReality: e.reality,
-        finalGap: e.gap,
-        isUnderrated: e.isUnderrated,
-        debug: e.entry.score.debug,
-      });
-    }
+    // Sort
+    const overrated = withVerdicts.filter((e) => !e.entry.score.is_underrated).sort((a, b) => b.entry.score.gap - a.entry.score.gap);
+    const underrated = withVerdicts.filter((e) => e.entry.score.is_underrated).sort((a, b) => a.entry.score.gap - b.entry.score.gap);
 
-    // Sort: overrated descending by gap, then underrated ascending by gap (most negative first)
-    const overrated = entries.filter((e) => !e.isUnderrated).sort((a, b) => b.gap - a.gap);
-    const underrated = entries.filter((e) => e.isUnderrated).sort((a, b) => a.gap - b.gap);
-
-    // Combine: overrated first (rank 1, 2, 3...), then underrated continues numbering
-    const ordered = [...overrated, ...underrated];
-
-    for (let i = 0; i < ordered.length; i++) {
-      const e = ordered[i];
-      const rank = e.isUnderrated ? underrated.indexOf(e) + 1 : overrated.indexOf(e) + 1;
-      const trendInfo = computeTrend(occasion, e.entry.restaurant.id, rank);
-
+    // Build rows
+    for (let i = 0; i < overrated.length; i++) {
+      const { entry, verdict } = overrated[i];
+      const rank = i + 1;
+      const trendInfo = computeTrend(occasion, entry.restaurant.id, rank);
       occasionRows.push({
         issue_id: issueRow.id,
-        restaurant_id: e.entry.restaurant.id,
+        restaurant_id: entry.restaurant.id,
         occasion,
-        hype_score: e.hype,
-        reality_score: e.reality,
-        gap: e.gap,
+        hype_score: entry.score.hype_score,
+        reality_score: entry.score.reality_score,
+        gap: entry.score.gap,
         rank,
-        is_underrated: e.isUnderrated,
+        is_underrated: false,
         trend: trendInfo.trend,
         trend_label: trendInfo.label,
-        verdict: e.verdict,
+        verdict,
+      });
+    }
+    for (let i = 0; i < underrated.length; i++) {
+      const { entry, verdict } = underrated[i];
+      const rank = i + 1;
+      const trendInfo = computeTrend(occasion, entry.restaurant.id, rank);
+      occasionRows.push({
+        issue_id: issueRow.id,
+        restaurant_id: entry.restaurant.id,
+        occasion,
+        hype_score: entry.score.hype_score,
+        reality_score: entry.score.reality_score,
+        gap: entry.score.gap,
+        rank,
+        is_underrated: true,
+        trend: trendInfo.trend,
+        trend_label: trendInfo.label,
+        verdict,
       });
     }
 
     occasionsBuilt++;
   }
 
-  // === 8. Insert all occasion_scores rows ===
+  // === 8. Bulk insert occasion_scores in chunks ===
   if (occasionRows.length > 0) {
-    // Insert in chunks to stay under any payload limits
     const CHUNK = 100;
     for (let i = 0; i < occasionRows.length; i += CHUNK) {
       const slice = occasionRows.slice(i, i + CHUNK);
@@ -251,7 +255,8 @@ export async function runRefresh(
   }
 
   console.log(
-    `[pipeline] issue #${newIssueNumber}: ${occasionsBuilt} occasions, ${occasionRows.length} total rankings`
+    `[pipeline] issue #${newIssueNumber}: ${occasionsBuilt} occasions, ` +
+    `${occasionRows.length} total rankings (after filtering calibrated middle)`
   );
 
   return {
@@ -260,5 +265,6 @@ export async function runRefresh(
     scored: scored.length,
     failed: failures.length,
     occasionsBuilt,
+    totalRankings: occasionRows.length,
   };
 }

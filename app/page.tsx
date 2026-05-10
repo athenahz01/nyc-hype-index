@@ -188,7 +188,7 @@ function OccasionCard({ occasion, top }: { occasion: Occasion; top: OccasionScor
                 )}
               </span>
               <span className="font-mono text-[12px] text-red group-hover:text-paper max-md:text-[11px]">
-                +{Math.abs(s.gap).toFixed(0)}↑
+                {Math.abs(s.gap).toFixed(0)}↑
               </span>
             </li>
           ))}
@@ -211,31 +211,32 @@ function Methodology() {
           How we <span className="border-b-2 border-red pb-1">measure hype</span>.
         </h2>
         <p className="text-[18px] leading-relaxed text-paper/90 max-w-[60ch]">
-          The Hype Index isn't an opinion. It's a number. Every week we pull four signals for every restaurant we track and compare the social hype against the diner reality — broken out by occasion, because the date-night calculation is different from the cheap-eats one.
+          The Hype Index isn't an opinion. It's a number. Every week we pull five signals for every restaurant we track, score the diner sentiment from each, and z-score the gap between social hype and ground truth across the entire issue. Restaurants where the algorithm and locals roughly agree don't appear at all — only the ones where the gap is real.
         </p>
         <div className="bg-paper/5 border-l-[3px] border-red px-7 py-6 my-9 font-mono text-sm leading-loose max-md:px-5 max-md:py-5 max-md:text-xs">
-          <span className="text-red">Hype Score</span> = TikTok peak views × engagement + Instagram volume
+          <span className="text-red">Hype</span> = TikTok peak views × caption sentiment + Instagram engagement
           <br />
-          <span className="text-red">Reality Score</span> = sentiment of Google reviews + Reddit + IG comments
+          <span className="text-red">Reality</span> = Google reviews (volume-weighted) + Reddit (when ≥3 mentions) + IG comments
           <br />
-          <span className="text-red">Gap</span> = Hype − Reality &nbsp;&nbsp;
-          <em className="text-paper/70">(higher = more overrated, normalized within each occasion)</em>
+          <span className="text-red">Gap</span> = Hype − Reality, both z-scored against the issue
+          <br />
+          <em className="text-paper/70">|gap| &lt; 10 is "calibrated" — algorithm and locals agree, hidden from leaderboards.</em>
         </div>
         <div className="grid grid-cols-3 gap-9 mt-12 max-md:grid-cols-1 max-md:gap-7">
           <Method
             num="01"
             title="Hype Signal"
-            body="TikTok peak views, Instagram engagement, posting velocity over a rolling 30-day window. A spot getting one 5M-view TikTok scores higher than one with steady traffic."
+            body="TikTok peak views and Instagram engagement, dampened by caption sentiment — viral roasts of overpriced spots count as agreement-with-thesis, not as hype. We're measuring 'algorithm loves it,' not 'algorithm is loud.'"
           />
           <Method
             num="02"
             title="Reality Signal"
-            body="Long-form Google reviews from local guides, sentiment from r/AskNYC and r/nyc, and Instagram caption sentiment after filtering influencer noise. Tourist reviews deweighted."
+            body="Long-form Google reviews from local guides, weighted by review count (a 4.7★ on 8K reviews beats a 4.7★ on 80). Reddit threads from r/AskNYC and r/nyc when there are enough to be meaningful. Tourist content deweighted."
           />
           <Method
             num="03"
-            title="Per-Occasion Ranking"
-            body="A restaurant's gap is normalized relative to other restaurants in the same occasion — Carbone competes against other date-night spots, not against Wu's Wonton King."
+            title="Z-Scored Gap"
+            body="Hype and Reality are both z-scored across the entire issue, so a +50 gap on Date Night means the same as a +50 gap on Brunch. Restaurants where the gap is small (within ±10) don't appear — they're calibrated, not interesting."
           />
         </div>
       </div>

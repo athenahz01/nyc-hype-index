@@ -150,7 +150,9 @@ function Row({
 }) {
   const isTop = !isUnderrated && rank <= 3;
   const gap = Math.abs(score.gap);
-  const gapDisplay = isUnderrated ? `−${gap.toFixed(0)}` : `+${gap.toFixed(0)}`;
+  // Drop the "+" sign on overrated — red color + ↑ arrow already convey "alarm"
+  // Keep "−" on underrated — gold + ↓ + minus together signal "hidden gem locals know"
+  const gapDisplay = isUnderrated ? `−${gap.toFixed(0)}` : gap.toFixed(0);
   const arrow = isUnderrated ? "↓" : "↑";
   const trendClass = trendColor(score.trend);
 

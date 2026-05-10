@@ -1,61 +1,86 @@
 /**
- * The scoring pipeline.
+ * Scoring v1.5 — sentiment-aware hype + volume-weighted reality + z-score gap.
  *
- * For one restaurant, fetch all four signals (Google, TikTok, Reddit, Instagram),
- * score them with Claude, and return raw signals + per-restaurant scores.
+ * KEY MODEL CHANGES vs. v1:
  *
- * IMPORTANT: This module returns *absolute* scores per restaurant. The pipeline
- * (lib/pipeline.ts) then applies a relative-ranking pass across all 30 restaurants
- * in the issue to produce final, well-spread Hype/Reality scores. That two-stage
- * approach is critical: absolute scoring alone produces compressed distributions
- * because (a) Google reviews are mostly 4+ stars regardless of quality, and
- * (b) TikTok view sampling under-represents true virality at the high end.
+ *   1. TikTok hype is sentiment-aware. We score TikTok captions for sentiment
+ *      separately, and roast-y / mixed content reduces effective hype. A
+ *      restaurant with 50M views of "this place is overrated" videos no
+ *      longer counts as hyped — it counts as the algorithm AGREEING with
+ *      the overrated thesis.
+ *
+ *   2. Google sentiment is volume-weighted. A 4.7★ on 8,000 reviews now
+ *      scores higher than a 4.7★ on 80 reviews. log10(count) saturates
+ *      around 3,000 reviews so the largest places don't dominate.
+ *
+ *   3. Reddit weight is dynamic. With <3 mentions Reddit's contribution to
+ *      Reality drops to 0 (one offhand comment shouldn't move a score 30%).
+ *      Google + IG re-weight to fill the gap.
+ *
+ *   4. Cross-issue z-score normalization. Hype and Reality are normalized
+ *      against ALL restaurants in the issue (not per-occasion). A "+50 gap
+ *      on Date Night" now means the same thing as "+50 gap on Brunch" —
+ *      both are 1 stddev above mean hype, 1 stddev below mean reality, etc.
+ *
+ *   5. Calibrated middle is filtered. Restaurants with |gap| < 10 (about
+ *      0.5 stddev) appear on neither leaderboard. They're "the algorithm
+ *      and locals roughly agree" — not the story this product tells.
+ *
+ * The pipeline calls scoreRestaurant() for each, then normalizeIssue() once.
  */
 
 import type { Restaurant } from "./types";
 import { getReviewsForRestaurant } from "./sources/google";
 import { fetchTikTokSignal, type TikTokSignal } from "./sources/tiktok";
-import { fetchRedditSignal, type RedditSignal } from "./sources/reddit";
+import { fetchRedditSignal } from "./sources/reddit";
 import { fetchInstagramSignal, type InstagramSignal } from "./sources/instagram";
 import { scoreSentiment, generateVerdict, summarizeTexts } from "./ai";
 
 // ============================================================
-// HYPE SCORING — capture peak virality, not just average
+// HYPE — raw signal computation per restaurant
 // ============================================================
 
 /**
- * Returns an *absolute* hype score 0-100 for a single restaurant based on
- * three sub-signals from TikTok:
- *   1. Peak views (max single-video view count) — captures whether this
- *      restaurant has ever gone viral
- *   2. Total views across all returned videos — captures volume
- *   3. Engagement rate (likes/views) — captures whether the videos resonate
+ * Convert TikTok signal to a 0-100 hype score, then dampen by sentiment.
  *
- * The pipeline will z-score-normalize these across the issue afterward.
+ * Sentiment dampening: a restaurant whose top videos are mostly positive
+ * gets full hype credit. If captions skew negative ("don't waste your money,"
+ * "overrated," "save your time"), those views count as agreement with the
+ * overrated thesis — not as hype.
+ *
+ * Specifically:
+ *   - sentiment >= 65 (mostly positive): full hype credit (multiplier 1.0)
+ *   - sentiment ~ 50 (mixed): 70% credit
+ *   - sentiment < 35 (negative): 40% credit — high views still indicate
+ *     attention, but they're not "the algorithm thinks this is great"
  */
-function tiktokRawHype(s: TikTokSignal): number {
+function tiktokHypeWithSentiment(s: TikTokSignal, captionSentiment: number | null): number {
   if (s.videoCount === 0 || s.totalViews === 0) return 0;
 
-  // Peak views — the single most-viewed video about this place.
-  // This is the clearest signal of "has this gone viral".
   const peakViews = Math.max(...s.videos.map((v) => v.views), 0);
 
-  // Three log-scaled sub-signals, each 0-100.
   // Peak: 1K → 20, 100K → 50, 1M → 70, 10M → 85, 100M → 100
   const peakScore = peakViews > 0 ? Math.min(100, (Math.log10(peakViews) - 3) * 15 + 20) : 0;
-
   // Volume: 10K total → 30, 1M → 60, 10M → 75, 100M → 90
   const volumeScore = s.totalViews > 0 ? Math.min(100, (Math.log10(s.totalViews) - 4) * 15 + 30) : 0;
-
-  // Video count: how many videos came back from search.
-  // 1 video → 20, 5 → 40, 20 → 60, 50 → 80, 100+ → 95
+  // Distinct videos returned: 1 → 20, 5 → 40, 20 → 60, 50+ → 80
   const countScore = s.videoCount > 0 ? Math.min(100, (Math.log10(s.videoCount) + 1) * 30) : 0;
 
-  // Blend: peak dominates (true viral signal), volume confirms, count is texture.
-  return Math.max(0, peakScore * 0.55 + volumeScore * 0.30 + countScore * 0.15);
+  const rawHype = peakScore * 0.55 + volumeScore * 0.30 + countScore * 0.15;
+
+  // Sentiment multiplier — only dampen, never amplify above 1.0
+  let multiplier = 1.0;
+  if (captionSentiment !== null) {
+    if (captionSentiment >= 65) multiplier = 1.0;
+    else if (captionSentiment >= 50) multiplier = 0.85;
+    else if (captionSentiment >= 35) multiplier = 0.65;
+    else multiplier = 0.45; // strongly negative: views are roasts, not hype
+  }
+
+  return Math.max(0, rawHype * multiplier);
 }
 
-function instagramRawHype(s: InstagramSignal): number {
+function instagramHype(s: InstagramSignal): number {
   if (s.postCount === 0) return 0;
   const peakLikes = Math.max(...s.posts.map((p) => p.likes), 0);
   const peakScore = peakLikes > 0 ? Math.min(100, (Math.log10(peakLikes) - 2) * 18 + 25) : 0;
@@ -64,36 +89,49 @@ function instagramRawHype(s: InstagramSignal): number {
 }
 
 // ============================================================
-// REALITY SCORING — stretch the distribution
+// REALITY — sentiment + volume, with dynamic source weighting
 // ============================================================
 
 /**
- * Stretch sentiment scores so they don't all cluster at 70-85.
+ * Volume-weight a sentiment score by review count.
  *
- * The problem: Google reviews are positively biased (happy people review more),
- * so Claude's sentiment scoring rarely goes below 65 even for mediocre places.
+ * The intuition: a sentiment of 80 backed by 5,000 reviews is far stronger
+ * evidence than a sentiment of 80 backed by 50 reviews. We multiply the
+ * sentiment by a volume factor that saturates around 3,000 reviews:
  *
- * The fix: re-anchor so that:
- *   - sentiment 50 (truly mixed) → reality 30
- *   - sentiment 70 (default "mostly positive") → reality 50
- *   - sentiment 85 (genuinely loved) → reality 75
- *   - sentiment 95 (universally raving) → reality 95
+ *   100 reviews   → factor 0.57 (downweighted)
+ *   500 reviews   → factor 0.77
+ *   1,000 reviews → factor 0.86
+ *   3,000 reviews → factor 1.00 (full weight)
  *
- * This is a non-linear stretch. Mathematically it's a scaled exponential.
+ * For places with very few reviews we don't zero them out — we still want
+ * SOME signal — just trust them less.
+ */
+function volumeFactor(count: number): number {
+  if (count <= 0) return 0.5; // no reviews → modest fallback
+  // log10-saturating curve, capped at 1.0
+  return Math.min(1.0, Math.log10(count) / 3.5);
+}
+
+/**
+ * Stretch raw sentiment 0-100 → reality 0-100 to spread the typical 65-90
+ * cluster across a wider range.
+ *
+ * Anchor points:
+ *   sentiment 50 → reality 30  (truly mixed reviews)
+ *   sentiment 65 → reality 45  (default "positive but with quibbles")
+ *   sentiment 80 → reality 65  (clearly loved)
+ *   sentiment 95 → reality 92  (universally raving)
  */
 function stretchSentiment(raw: number | null): number | null {
   if (raw === null) return null;
-  // Normalize 50-100 → 0-1, then apply mild S-curve to spread the middle
   const t = Math.max(0, Math.min(1, (raw - 50) / 50));
-  // Power curve: stretches the "default positive" middle range
   const stretched = Math.pow(t, 1.7);
-  // Re-scale so we span 30-95 rather than 0-100 (a place with reviews
-  // shouldn't score 0 just because Claude said 50)
   return 30 + stretched * 65;
 }
 
 // ============================================================
-// MAIN SCORING FUNCTION
+// SCORE RESULT
 // ============================================================
 
 export type ScoreResult = {
@@ -101,28 +139,27 @@ export type ScoreResult = {
   tiktok_views: number;
   tiktok_posts: number;
   tiktok_peak_views: number;
+  tiktok_caption_sentiment: number | null;
   ig_posts: number;
   ig_engagement: number;
   google_rating: number | null;
   google_reviews: number;
   reddit_mentions: number;
 
-  // Per-source sentiment scores (post-stretch, 0-100)
+  // Per-source sentiment (post-stretch, 0-100)
   google_sentiment: number | null;
   reddit_sentiment: number | null;
   ig_comment_sentiment: number | null;
 
-  // Absolute scores (0-100). The pipeline may z-score-normalize these
-  // across the issue to produce final published scores.
+  // Pre-normalization absolute scores
   hype_score: number;
   reality_score: number;
   gap: number;
   is_underrated: boolean;
 
-  // Editorial
+  // Editorial — populated by pipeline AFTER normalization
   verdict: string;
 
-  // Debug
   debug: {
     googleSummary: string;
     redditSummary: string;
@@ -132,25 +169,77 @@ export type ScoreResult = {
 };
 
 const HYPE_BLEND = { tiktok: 0.6, instagram: 0.4 };
-const REALITY_WEIGHTS = {
-  google: 0.55, // long-form local-guide reviews are the strongest signal
-  reddit: 0.30, // honest discussions, no influencer noise — now via free Reddit JSON
-  igComments: 0.15, // weakest of the three; people post nice photos
+
+// Reality weights are dynamic — see computeRealityScore below
+const REALITY_FULL_WEIGHTS = {
+  google: 0.55,
+  reddit: 0.30,
+  igComments: 0.15,
 };
 
-export async function scoreRestaurant(
-  restaurant: Restaurant
-): Promise<ScoreResult> {
+const MIN_REDDIT_MENTIONS = 3; // below this, Reddit is dropped from reality
+
+/**
+ * Compute a reality score given available sentiment signals + their volume.
+ * Dynamically reweights when sources are missing or low-volume.
+ */
+function computeRealityScore(input: {
+  googleSentiment: number | null;
+  googleReviewCount: number;
+  redditSentiment: number | null;
+  redditMentionCount: number;
+  igSentiment: number | null;
+  igPostCount: number;
+}): number {
+  // Drop Reddit entirely if mentions are too few — one offhand comment isn't 30% of truth
+  const useReddit = input.redditSentiment !== null && input.redditMentionCount >= MIN_REDDIT_MENTIONS;
+  const useGoogle = input.googleSentiment !== null;
+  const useIG = input.igSentiment !== null;
+
+  // Compute effective weights from the full table, dropping unused sources
+  let totalWeight = 0;
+  if (useGoogle) totalWeight += REALITY_FULL_WEIGHTS.google;
+  if (useReddit) totalWeight += REALITY_FULL_WEIGHTS.reddit;
+  if (useIG) totalWeight += REALITY_FULL_WEIGHTS.igComments;
+
+  if (totalWeight === 0) return 50; // no data — neutral fallback
+
+  let numerator = 0;
+  if (useGoogle) {
+    // Volume-weight Google: sentiment * (review-count factor)
+    const vf = volumeFactor(input.googleReviewCount);
+    // Apply factor as a pull-toward-50 — places with few reviews get pulled
+    // toward "we don't know"; places with many reviews keep their score.
+    const adjusted = 50 + (input.googleSentiment! - 50) * vf;
+    numerator += adjusted * REALITY_FULL_WEIGHTS.google;
+  }
+  if (useReddit) {
+    numerator += input.redditSentiment! * REALITY_FULL_WEIGHTS.reddit;
+  }
+  if (useIG) {
+    // IG also gets a (lighter) volume factor — single posts shouldn't dominate
+    const vf = volumeFactor(input.igPostCount * 10); // *10 since IG counts are smaller
+    const adjusted = 50 + (input.igSentiment! - 50) * vf;
+    numerator += adjusted * REALITY_FULL_WEIGHTS.igComments;
+  }
+
+  return numerator / totalWeight;
+}
+
+// ============================================================
+// MAIN SCORING FUNCTION
+// ============================================================
+
+export async function scoreRestaurant(restaurant: Restaurant): Promise<ScoreResult> {
   console.log(`[score] starting ${restaurant.name}`);
 
   // === Fetch all signals in parallel ===
-  const [googleResult, tiktokResult, redditResult, instagramResult] =
-    await Promise.allSettled([
-      getReviewsForRestaurant(restaurant.name, restaurant.google_place_id),
-      fetchTikTokSignal(restaurant.search_terms.length ? restaurant.search_terms : [restaurant.name]),
-      fetchRedditSignal(restaurant.name),
-      fetchInstagramSignal(restaurant.name),
-    ]);
+  const [googleResult, tiktokResult, redditResult, instagramResult] = await Promise.allSettled([
+    getReviewsForRestaurant(restaurant.name, restaurant.google_place_id),
+    fetchTikTokSignal(restaurant.search_terms.length ? restaurant.search_terms : [restaurant.name]),
+    fetchRedditSignal(restaurant.name),
+    fetchInstagramSignal(restaurant.name),
+  ]);
 
   const google =
     googleResult.status === "fulfilled" ? googleResult.value : { placeId: null, details: null };
@@ -173,12 +262,13 @@ export async function scoreRestaurant(
   if (instagramResult.status === "rejected")
     console.warn(`[score] instagram failed:`, instagramResult.reason);
 
-  // === Sentiment scoring (parallel) ===
+  // === Sentiment scoring (4 calls in parallel — added TikTok captions in v1.5) ===
   const googleTexts = (google.details?.reviews ?? []).map((r) => r.text).filter(Boolean);
   const redditTexts = reddit.mentions.map((m) => `${m.title}\n${m.text}`).filter(Boolean);
   const igCaptions = instagram.posts.map((p) => p.caption).filter(Boolean);
+  const tiktokCaptions = tiktok.videos.map((v) => v.text).filter(Boolean);
 
-  const [googleSent, redditSent, igSent] = await Promise.allSettled([
+  const [googleSent, redditSent, igSent, tiktokSent] = await Promise.allSettled([
     googleTexts.length
       ? scoreSentiment("google", googleTexts)
       : Promise.resolve({ score: null, reasoning: "no data" }),
@@ -188,44 +278,38 @@ export async function scoreRestaurant(
     igCaptions.length
       ? scoreSentiment("instagram_comments", igCaptions)
       : Promise.resolve({ score: null, reasoning: "no data" }),
+    tiktokCaptions.length
+      ? scoreSentiment("tiktok_captions", tiktokCaptions)
+      : Promise.resolve({ score: null, reasoning: "no data" }),
   ]);
 
   const rawGoogle = googleSent.status === "fulfilled" ? (googleSent.value.score as number | null) : null;
   const rawReddit = redditSent.status === "fulfilled" ? (redditSent.value.score as number | null) : null;
   const rawIG = igSent.status === "fulfilled" ? (igSent.value.score as number | null) : null;
+  const rawTiktok = tiktokSent.status === "fulfilled" ? (tiktokSent.value.score as number | null) : null;
 
-  // Apply sentiment stretch so reality scores aren't all clustered at 70-85
+  // Stretch reality-side sentiments into 0-100 reality-space
   const google_sentiment = stretchSentiment(rawGoogle);
   const reddit_sentiment = stretchSentiment(rawReddit);
   const ig_comment_sentiment = stretchSentiment(rawIG);
+  // TikTok sentiment is NOT stretched — we use it directly as a 0-100 multiplier signal
 
-  // === Hype Score ===
-  const tiktokHype = tiktokRawHype(tiktok);
-  const instagramHype = instagramRawHype(instagram);
-  const hype_score = tiktokHype * HYPE_BLEND.tiktok + instagramHype * HYPE_BLEND.instagram;
+  // === Hype Score (now sentiment-aware) ===
+  const tiktokHype = tiktokHypeWithSentiment(tiktok, rawTiktok);
+  const igHype = instagramHype(instagram);
+  const hype_score = tiktokHype * HYPE_BLEND.tiktok + igHype * HYPE_BLEND.instagram;
 
-  // === Reality Score (weighted blend of available signals) ===
-  let realityNumerator = 0;
-  let realityDenominator = 0;
-  if (google_sentiment !== null) {
-    realityNumerator += google_sentiment * REALITY_WEIGHTS.google;
-    realityDenominator += REALITY_WEIGHTS.google;
-  }
-  if (reddit_sentiment !== null) {
-    realityNumerator += reddit_sentiment * REALITY_WEIGHTS.reddit;
-    realityDenominator += REALITY_WEIGHTS.reddit;
-  }
-  if (ig_comment_sentiment !== null) {
-    realityNumerator += ig_comment_sentiment * REALITY_WEIGHTS.igComments;
-    realityDenominator += REALITY_WEIGHTS.igComments;
-  }
+  // === Reality Score (dynamic weighting) ===
+  const reality_score = computeRealityScore({
+    googleSentiment: google_sentiment,
+    googleReviewCount: google.details?.userRatingCount ?? 0,
+    redditSentiment: reddit_sentiment,
+    redditMentionCount: reddit.mentionCount,
+    igSentiment: ig_comment_sentiment,
+    igPostCount: instagram.postCount,
+  });
 
-  // Fallback if no sentiment signal at all
-  const reality_score =
-    realityDenominator > 0
-      ? realityNumerator / realityDenominator
-      : stretchSentiment((google.details?.rating ?? 4.0) * 20) ?? 50;
-
+  // Pre-normalization gap (will be re-computed by pipeline after z-score normalization)
   const gap = hype_score - reality_score;
   const is_underrated = gap < -10;
 
@@ -233,20 +317,21 @@ export async function scoreRestaurant(
     googleSummary: summarizeTexts(googleTexts),
     redditSummary: summarizeTexts(redditTexts),
     igSummary: summarizeTexts(igCaptions),
-    tiktokSummary: summarizeTexts(tiktok.videos.map((v) => v.text)),
+    tiktokSummary: summarizeTexts(tiktokCaptions),
   };
 
   const peakViews = tiktok.videos.length > 0 ? Math.max(...tiktok.videos.map((v) => v.views)) : 0;
 
   console.log(
-    `[score] ${restaurant.name}: hype=${hype_score.toFixed(1)} reality=${reality_score.toFixed(1)} gap=${gap.toFixed(1)} (peakTT=${peakViews.toLocaleString()})`
+    `[score] ${restaurant.name}: hype=${hype_score.toFixed(1)} reality=${reality_score.toFixed(1)} gap=${gap.toFixed(1)} ` +
+    `(peakTT=${peakViews.toLocaleString()}, ttSent=${rawTiktok ?? "—"}, gReviews=${google.details?.userRatingCount ?? 0}, redditN=${reddit.mentionCount})`
   );
 
-  // Verdict is generated AFTER normalization — see generateVerdictForScore.
   return {
     tiktok_views: tiktok.totalViews,
     tiktok_posts: tiktok.videoCount,
     tiktok_peak_views: peakViews,
+    tiktok_caption_sentiment: rawTiktok,
     ig_posts: instagram.postCount,
     ig_engagement: instagram.totalEngagement,
     google_rating: google.details?.rating ?? null,
@@ -261,7 +346,7 @@ export async function scoreRestaurant(
     reality_score: Math.round(reality_score * 100) / 100,
     gap: Math.round(gap * 100) / 100,
     is_underrated,
-    verdict: "",  // populated later by generateVerdictForScore
+    verdict: "", // populated later by generateVerdictForScore
 
     debug,
   };
@@ -269,10 +354,6 @@ export async function scoreRestaurant(
 
 /**
  * Generate the editorial verdict using the FINAL (normalized) scores.
- * Called by pipeline.ts in a second pass after relative normalization.
- *
- * Why split: relative normalization may flip a restaurant from "underrated"
- * to "overrated", so the verdict tone needs to match the final classification.
  */
 export async function generateVerdictForScore(input: {
   restaurant: { name: string; neighborhood: string };
@@ -301,76 +382,80 @@ export async function generateVerdictForScore(input: {
 }
 
 // ============================================================
-// RELATIVE NORMALIZATION (called by pipeline)
+// CROSS-ISSUE Z-SCORE NORMALIZATION
 // ============================================================
 
 /**
- * Apply z-score-style normalization to spread Hype Scores across the issue.
- *
- * Why: even with the absolute formulas above, all 30 restaurants tend to
- * score in a tight 30-60 band. We want the *most* viral spot on the
- * leaderboard at ~92 and the *least* viral at ~12, with proportional
- * spread between. This is fundamentally what makes the leaderboard read
- * as a leaderboard.
- *
- * The transform: rank restaurants by their absolute score, then map to a
- * target distribution centered at 50 with reasonable spread (15-90).
+ * Compute mean and standard deviation of a number array.
  */
-export function normalizeHypeAcrossIssue(
-  scores: { restaurant_id: string; absolute_hype: number }[]
-): Map<string, number> {
-  const result = new Map<string, number>();
-  if (scores.length === 0) return result;
-  if (scores.length === 1) {
-    result.set(scores[0].restaurant_id, scores[0].absolute_hype);
-    return result;
-  }
-
-  // Sort by absolute hype descending
-  const sorted = [...scores].sort((a, b) => b.absolute_hype - a.absolute_hype);
-
-  // Map to target range. Top → 92, bottom → 12, with linear-ish spread
-  // weighted toward the middle (so we don't squish the top).
-  const N = sorted.length;
-  for (let i = 0; i < N; i++) {
-    // Percentile rank: 0 = top, 1 = bottom
-    const pct = i / (N - 1);
-    // Mirror it to a slight S-curve: the top few get more separation
-    // pct=0 → 0.92, pct=0.5 → 0.50, pct=1 → 0.12
-    const target = 92 - pct * 80;
-    result.set(sorted[i].restaurant_id, Math.round(target * 100) / 100);
-  }
-
-  return result;
+function meanStddev(values: number[]): { mean: number; stddev: number } {
+  if (values.length === 0) return { mean: 50, stddev: 1 };
+  const mean = values.reduce((s, v) => s + v, 0) / values.length;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
+  const stddev = Math.max(1, Math.sqrt(variance)); // floor at 1 to avoid div-by-0
+  return { mean, stddev };
 }
 
 /**
- * Same normalization for reality scores. Less aggressive because reality
- * scores already have decent spread after the stretch transform.
+ * Map a z-score to a 0-100 display value.
+ *   z = 0     → 50    (mean)
+ *   z = +1    → 70    (above average)
+ *   z = +2    → 90    (top decile)
+ *   z = -1    → 30
+ *   z = -2    → 10
+ * Clamped to [5, 95] so display values don't go off the rails.
  */
-export function normalizeRealityAcrossIssue(
-  scores: { restaurant_id: string; absolute_reality: number }[]
-): Map<string, number> {
-  const result = new Map<string, number>();
-  if (scores.length === 0) return result;
-  if (scores.length === 1) {
-    result.set(scores[0].restaurant_id, scores[0].absolute_reality);
-    return result;
-  }
-
-  // For reality, blend absolute + percentile-rank 70/30. We want absolute
-  // values to mostly carry through (a 4.7-star place beats a 4.1-star place
-  // even within an issue), but with some normalization to avoid clustering.
-  const sorted = [...scores].sort((a, b) => b.absolute_reality - a.absolute_reality);
-  const N = sorted.length;
-
-  for (let i = 0; i < N; i++) {
-    const pct = i / (N - 1);
-    const percentileTarget = 90 - pct * 60; // 90 → 30
-    const absoluteScore = sorted[i].absolute_reality;
-    const blended = absoluteScore * 0.6 + percentileTarget * 0.4;
-    result.set(sorted[i].restaurant_id, Math.round(blended * 100) / 100);
-  }
-
-  return result;
+function zToDisplay(z: number): number {
+  return Math.max(5, Math.min(95, 50 + z * 20));
 }
+
+export type NormalizedScore = {
+  restaurant_id: string;
+  hype_normalized: number;     // 0-100, z-scored
+  reality_normalized: number;  // 0-100, z-scored
+  gap_normalized: number;      // hype_normalized - reality_normalized (-90 to +90)
+};
+
+/**
+ * Z-score-normalize hype and reality across the entire issue.
+ *
+ * This produces COMPARABLE scores across all occasions: a "+50 gap" on
+ * Date Night means the same thing as a "+50 gap" on Brunch, because both
+ * are computed from z-scores against the same global mean and stddev.
+ */
+export function normalizeIssue(
+  scores: { restaurant_id: string; absolute_hype: number; absolute_reality: number }[]
+): NormalizedScore[] {
+  if (scores.length === 0) return [];
+
+  const hypes = scores.map((s) => s.absolute_hype);
+  const realities = scores.map((s) => s.absolute_reality);
+  const { mean: hMean, stddev: hStd } = meanStddev(hypes);
+  const { mean: rMean, stddev: rStd } = meanStddev(realities);
+
+  console.log(
+    `[normalize] hype: mean=${hMean.toFixed(1)} σ=${hStd.toFixed(1)}, ` +
+    `reality: mean=${rMean.toFixed(1)} σ=${rStd.toFixed(1)}`
+  );
+
+  return scores.map((s) => {
+    const hZ = (s.absolute_hype - hMean) / hStd;
+    const rZ = (s.absolute_reality - rMean) / rStd;
+    const hN = zToDisplay(hZ);
+    const rN = zToDisplay(rZ);
+    return {
+      restaurant_id: s.restaurant_id,
+      hype_normalized: Math.round(hN * 100) / 100,
+      reality_normalized: Math.round(rN * 100) / 100,
+      gap_normalized: Math.round((hN - rN) * 100) / 100,
+    };
+  });
+}
+
+/**
+ * Threshold for inclusion in either leaderboard.
+ *   |gap| < UNDERRATED_THRESHOLD → calibrated, hidden from both sections
+ *   gap >= +THRESHOLD → overrated
+ *   gap <= -THRESHOLD → underrated
+ */
+export const GAP_THRESHOLD = 10;
