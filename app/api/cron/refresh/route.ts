@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { runRefresh } from "@/lib/pipeline";
 
 export const runtime = "nodejs";
-export const maxDuration = 800; // ~13 min — Vercel Pro cap is 800s, Hobby is 60s
+export const maxDuration = 300; // ~13 min — Vercel Pro cap is 800s, Hobby is 60s
 
 /**
  * GET /api/cron/refresh
