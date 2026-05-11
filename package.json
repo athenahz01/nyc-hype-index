@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "seed": "tsx --env-file=.env.local scripts/seed.ts",
-    "refresh": "tsx --env-file=.env.local scripts/refresh.ts"
+    "refresh": "tsx --env-file=.env.local scripts/refresh.ts",
+    "refresh-batch": "tsx --env-file=.env.local scripts/refresh-batch.ts",
+    "publish-issue": "tsx --env-file=.env.local scripts/publish-issue.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

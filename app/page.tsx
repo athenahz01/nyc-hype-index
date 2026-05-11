@@ -1,6 +1,7 @@
 import { fetchOccasionHighlights } from "@/lib/queries";
 import SubmitTip from "@/components/SubmitTip";
 import SubscribeForm from "@/components/SubscribeForm";
+import SearchBar from "@/components/SearchBar";
 import Link from "next/link";
 import {
   OCCASIONS,
@@ -75,18 +76,23 @@ function Masthead({ issueNumber, publishedAt }: { issueNumber: number | null; pu
 
 function Hero() {
   return (
-    <section className="hero py-20 px-7 border-b border-ink text-center relative overflow-hidden max-md:py-14 max-md:px-5">
-      <span className="inline-block font-mono text-[11px] uppercase tracking-widest text-red mb-7 border border-red px-3.5 py-1.5 rounded-full bg-red/5 max-md:text-[10px] max-md:px-3 max-md:py-1.5 max-md:mb-6">
+    <section className="hero py-16 px-7 border-b border-ink text-center relative overflow-hidden max-md:py-10 max-md:px-5">
+      <span className="inline-block font-mono text-[11px] uppercase tracking-widest text-red mb-6 border border-red px-3.5 py-1.5 rounded-full bg-red/5 max-md:text-[10px] max-md:px-3 max-md:py-1.5 max-md:mb-5">
         A weekly autopsy of NYC restaurant hype
       </span>
-      <h1 className="font-display font-black text-[clamp(54px,9vw,132px)] leading-[0.92] tracking-tighter mx-auto max-w-[14ch]">
-        Which spots are <em className="italic font-normal text-red">overrated</em>, ranked by data.
+      <h1 className="font-display font-black text-[clamp(46px,8vw,108px)] leading-[0.92] tracking-tighter mx-auto max-w-[16ch]">
+        Is it <em className="italic font-normal text-red">overrated</em>?
       </h1>
-      <p className="mt-9 mx-auto max-w-[56ch] text-[18px] leading-relaxed text-ink-soft">
-        Every week, we measure the gap between how viral a NYC restaurant is on TikTok and Instagram, and what people who actually eat there say.{" "}
-        <strong className="font-semibold text-ink">The bigger the gap, the bigger the hype.</strong>{" "}
-        Pick your occasion below.
+      <p className="mt-7 mx-auto max-w-[52ch] text-[17px] leading-relaxed text-ink-soft max-md:text-[15px]">
+        We measure the gap between how viral a NYC restaurant is on TikTok and Instagram, and what people who actually eat there say.{" "}
+        <strong className="font-semibold text-ink">The bigger the gap, the bigger the hype.</strong>
       </p>
+      <div className="mt-10 max-md:mt-7">
+        <SearchBar variant="hero" />
+        <div className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted">
+          Try "Carbone" · "Wu's Wonton King" · or anywhere else
+        </div>
+      </div>
     </section>
   );
 }
@@ -140,10 +146,10 @@ function OccasionGrid({ highlights }: { highlights: Record<string, OccasionScore
     <section className="px-7 py-16 max-md:px-5 max-md:py-12">
       <div className="flex justify-between items-baseline pb-8 max-md:flex-col max-md:items-start max-md:gap-2">
         <h2 className="font-display font-extrabold text-5xl tracking-tight max-md:text-3xl">
-          Pick your <em className="italic font-normal">occasion</em>.
+          Or browse by <em className="italic font-normal">occasion</em>.
         </h2>
         <div className="font-mono text-[11px] uppercase tracking-wider text-muted max-md:text-[10px]">
-          Top 3 most overrated · Click to see full ranking
+          This week's most overrated · Click for the full ranking
         </div>
       </div>
       <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">

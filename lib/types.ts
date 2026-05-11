@@ -180,3 +180,33 @@ export type OccasionScoreWithRestaurant = OccasionScore & {
 export type ScoreWithRestaurant = RestaurantScore & {
   restaurant: Pick<Restaurant, "slug" | "name" | "neighborhood" | "borough">;
 };
+
+/** A row in the continuous-corpus table — one per restaurant, latest scores */
+export type LatestScore = {
+  restaurant_id: string;
+  tiktok_views: number;
+  tiktok_posts: number;
+  tiktok_peak_views: number;
+  tiktok_caption_sentiment: number | null;
+  ig_posts: number;
+  ig_engagement: number;
+  google_rating: number | null;
+  google_reviews: number;
+  reddit_mentions: number;
+  google_sentiment: number | null;
+  reddit_sentiment: number | null;
+  ig_comment_sentiment: number | null;
+  hype_absolute: number | null;
+  reality_absolute: number | null;
+  scored_at: string;
+  source: "batch" | "live_search" | "manual";
+};
+
+/** Latest score joined with restaurant info — what search/detail pages get */
+export type LatestScoreWithRestaurant = LatestScore & {
+  restaurant: Restaurant;
+  /** Computed at display time: relative position within full corpus (z-scored) */
+  hype_display?: number;
+  reality_display?: number;
+  gap_display?: number;
+};

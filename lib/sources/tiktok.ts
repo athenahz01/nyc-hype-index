@@ -1,22 +1,40 @@
 /**
- * TikTok via RapidAPI's `tiktok-scraper7` (tikwm).
- *
- * Endpoint used: `/feed/search` — keyword video search.
- * Returns up to 30 videos per query, each with view counts, likes,
- * comments, and the caption text we need for downstream sentiment.
+ * TikTok via Apify's clockworks/tiktok-scraper actor.
  *
  * Why this provider:
- *   - Free tier (~500 req/mo) easily covers 30 restaurants × 1-3 search terms = ~90 reqs/run
- *   - Same RAPIDAPI_KEY as the existing Instagram integration
- *   - Returns rich engagement metrics including play_count (views), digg_count (likes)
+ *   - Runs on Apify FREE plan (apidojo's tiktok-scraper-api requires paid)
+ *   - 175K+ users on Apify, well-maintained, stable schema
+ *   - Costs ~$3.70/1K results — fits in $5 free credit if we keep volume low
  *
- * If endpoint shape changes, only this file needs updating — the contract
- * with the rest of the system (TikTokSignal type) is stable.
+ * Cost control:
+ *   - 1 search term per restaurant (down from 3)
+ *   - 5 videos per query (down from 20)
+ *   - Total: 77 restaurants × 5 = 385 results per refresh
+ *   - At $3.70/1K = ~$1.42 per refresh, ~$5.70/month for 4 weekly refreshes
+ *   - If running bi-weekly that drops to ~$2.85/mo, well within $5 free credit
+ *
+ * Input schema (verified from clockworks docs):
+ *   {
+ *     searchQueries: ["carbone nyc"],     // list of search terms
+ *     resultsPerPage: 5,                  // max videos per query
+ *     shouldDownloadVideos: false,        // we only need metadata
+ *     shouldDownloadCovers: false,        // skip preview images
+ *     proxyConfiguration: { useApifyProxy: true }
+ *   }
+ *
+ * Output schema (clockworks/tiktok-scraper):
+ *   {
+ *     id, text (=caption), createTimeISO,
+ *     playCount, diggCount, commentCount, shareCount,
+ *     authorMeta: { name, ... },
+ *     ...
+ *   }
  */
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
-const RAPIDAPI_HOST =
-  process.env.RAPIDAPI_TIKTOK_HOST || "tiktok-scraper7.p.rapidapi.com";
+import { ApifyClient } from "apify-client";
+
+const APIFY_TOKEN = process.env.APIFY_TOKEN!;
+const ACTOR_ID = "clockworks/tiktok-scraper";
 
 export type TikTokVideo = {
   id: string;
@@ -37,122 +55,89 @@ export type TikTokSignal = {
 };
 
 /**
- * Try a list of likely keyword-search endpoints and use whichever one returns data.
- * Different builds of this provider expose the keyword-search endpoint slightly
- * differently. We try the known patterns in order.
+ * Normalize a single output item from clockworks into our TikTokVideo shape.
  */
-async function trySearchEndpoints(query: string, count: number): Promise<any | null> {
-  const encoded = encodeURIComponent(query);
-  const candidates = [
-    // tikwm-style: GET /feed/search?keywords=...&count=...&cursor=0&region=US&publish_time=0&sort_type=0
-    `https://${RAPIDAPI_HOST}/feed/search?keywords=${encoded}&count=${count}&cursor=0&region=US&publish_time=0&sort_type=0`,
-    // alternative
-    `https://${RAPIDAPI_HOST}/search/general?keywords=${encoded}&count=${count}&cursor=0`,
-    `https://${RAPIDAPI_HOST}/api/search/general?keywords=${encoded}&count=${count}`,
-    `https://${RAPIDAPI_HOST}/search?keyword=${encoded}&count=${count}`,
-  ];
-
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url, {
-        headers: {
-          "x-rapidapi-key": RAPIDAPI_KEY,
-          "x-rapidapi-host": RAPIDAPI_HOST,
-        },
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      // Check if this looks like a real video search response
-      if (data && (data.data?.videos || data.videos || data.data?.results || data.results || Array.isArray(data.data) || Array.isArray(data))) {
-        return data;
-      }
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
+function normalizeVideo(item: any): TikTokVideo | null {
+  if (!item || !item.id) return null;
+  return {
+    id: String(item.id),
+    // clockworks uses playCount/diggCount/commentCount/shareCount
+    views: Number(item.playCount ?? 0),
+    likes: Number(item.diggCount ?? 0),
+    comments: Number(item.commentCount ?? 0),
+    shares: Number(item.shareCount ?? 0),
+    // Caption is in `text` field for clockworks
+    text: String(item.text ?? "").slice(0, 500),
+    createdAt: String(item.createTimeISO ?? ""),
+  };
 }
 
 /**
- * Normalize the response into our TikTokVideo shape.
- * Different providers nest the video array differently, so we probe known shapes.
- */
-function normalizeVideos(payload: any): TikTokVideo[] {
-  if (!payload) return [];
-
-  const candidates: any[] =
-    payload.data?.videos ||
-    payload.videos ||
-    payload.data?.results ||
-    payload.results ||
-    (Array.isArray(payload.data) ? payload.data : null) ||
-    (Array.isArray(payload) ? payload : null) ||
-    [];
-
-  return candidates
-    .filter(Boolean)
-    .map((v: any) => ({
-      id: String(v.video_id ?? v.aweme_id ?? v.id ?? v.itemId ?? ""),
-      // tikwm-style fields: play_count (views), digg_count (likes), comment_count, share_count
-      views: Number(v.play_count ?? v.playCount ?? v.viewCount ?? v.statistics?.play_count ?? 0),
-      likes: Number(v.digg_count ?? v.diggCount ?? v.likeCount ?? v.statistics?.digg_count ?? 0),
-      comments: Number(v.comment_count ?? v.commentCount ?? v.statistics?.comment_count ?? 0),
-      shares: Number(v.share_count ?? v.shareCount ?? v.statistics?.share_count ?? 0),
-      text: String(v.title ?? v.desc ?? v.description ?? v.text ?? "").slice(0, 500),
-      createdAt: String(v.create_time ?? v.createTime ?? v.createdAt ?? ""),
-    }))
-    .filter((v) => v.id !== "");
-}
-
-/**
- * Run searches for each search term in parallel and aggregate.
- * De-duped by video ID across queries.
+ * Fetch TikTok signal for a restaurant.
  *
- * Note: opts.maxItemsPerQuery and opts.oldestDays are accepted for backwards
- * compatibility with the old Apify-based signature, but RapidAPI's free tier
- * doesn't expose date filtering reliably so oldestDays is ignored.
+ * Uses only the FIRST search term to keep cost down. The first term is
+ * usually the most distinctive (e.g. "carbone nyc") and the additional
+ * terms produced diminishing returns since search results overlap heavily.
  */
 export async function fetchTikTokSignal(
   searchTerms: string[],
   opts: { maxItemsPerQuery?: number; oldestDays?: number } = {}
 ): Promise<TikTokSignal> {
-  const { maxItemsPerQuery = 20 } = opts;
+  // 5 default — balance between signal quality and cost
+  // (peak-views model only needs 1-2 videos to work; extras are bonus)
+  const { maxItemsPerQuery = 5 } = opts;
 
-  if (!RAPIDAPI_KEY) {
-    console.warn("[tiktok] RAPIDAPI_KEY missing — skipping");
+  if (!APIFY_TOKEN) {
+    console.warn("[tiktok] APIFY_TOKEN missing — skipping");
     return { totalViews: 0, totalLikes: 0, totalComments: 0, videoCount: 0, videos: [] };
   }
 
-  // Sequential to be polite to free tier rate limits (5 req/sec on most plans)
-  const seen = new Set<string>();
-  const allVideos: TikTokVideo[] = [];
-
-  for (const term of searchTerms) {
-    try {
-      const payload = await trySearchEndpoints(term, maxItemsPerQuery);
-      const videos = normalizeVideos(payload);
-
-      if (videos.length === 0 && payload) {
-        // Helpful one-time debug output if the response shape is unexpected
-        const preview = JSON.stringify(payload).slice(0, 200);
-        console.warn(`[tiktok] "${term}": got response but parsed 0 videos — payload preview: ${preview}`);
-      }
-
-      for (const v of videos) {
-        if (seen.has(v.id)) continue;
-        seen.add(v.id);
-        allVideos.push(v);
-      }
-    } catch (e: any) {
-      console.warn(`[tiktok] search "${term}" failed:`, e?.message ?? e);
-    }
+  if (searchTerms.length === 0) {
+    return { totalViews: 0, totalLikes: 0, totalComments: 0, videoCount: 0, videos: [] };
   }
 
-  return {
-    totalViews: allVideos.reduce((s, v) => s + v.views, 0),
-    totalLikes: allVideos.reduce((s, v) => s + v.likes, 0),
-    totalComments: allVideos.reduce((s, v) => s + v.comments, 0),
-    videoCount: allVideos.length,
-    videos: allVideos,
-  };
+  const primaryTerm = searchTerms[0];
+  const client = new ApifyClient({ token: APIFY_TOKEN });
+
+  try {
+    // Use clockworks' searchQueries input. shouldDownload* flags off for speed/cost.
+    const run = await client.actor(ACTOR_ID).call(
+      {
+        searchQueries: [primaryTerm],
+        resultsPerPage: maxItemsPerQuery,
+        shouldDownloadVideos: false,
+        shouldDownloadCovers: false,
+        shouldDownloadSubtitles: false,
+        shouldDownloadSlideshowImages: false,
+        proxyConfiguration: { useApifyProxy: true },
+      },
+      { waitSecs: 120 } // hard cap: 2 minutes per restaurant
+    );
+
+    if (!run?.defaultDatasetId) {
+      console.warn(`[tiktok] "${primaryTerm}" — no dataset returned`);
+      return { totalViews: 0, totalLikes: 0, totalComments: 0, videoCount: 0, videos: [] };
+    }
+
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const videos = (items as any[])
+      .map(normalizeVideo)
+      .filter((v): v is TikTokVideo => v !== null);
+
+    console.log(`[tiktok] "${primaryTerm}" → ${videos.length} videos`);
+
+    return {
+      totalViews: videos.reduce((s, v) => s + v.views, 0),
+      totalLikes: videos.reduce((s, v) => s + v.likes, 0),
+      totalComments: videos.reduce((s, v) => s + v.comments, 0),
+      videoCount: videos.length,
+      videos,
+    };
+  } catch (e: any) {
+    // Common cases: out-of-credit, actor timeout, transient Apify error.
+    // Log and return empty — pipeline tolerates missing TikTok data
+    // (the restaurant just gets hype=0 and likely filters as calibrated).
+    console.warn(`[tiktok] "${primaryTerm}" failed:`, e?.message ?? e);
+    return { totalViews: 0, totalLikes: 0, totalComments: 0, videoCount: 0, videos: [] };
+  }
 }
