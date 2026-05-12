@@ -204,6 +204,13 @@ export async function fetchRestaurantDetail(slug: string): Promise<RestaurantDet
   }
   if (!restaurant) {
     console.warn(`[fetchRestaurantDetail] no restaurant found for slug="${slug}"`);
+    // Diagnostic: see if there's a row matching with ilike (in case of casing/whitespace)
+    const { data: fuzzy } = await supabase
+      .from("restaurants")
+      .select("slug, name, active")
+      .ilike("slug", `%${slug}%`)
+      .limit(3);
+    console.warn(`[fetchRestaurantDetail] fuzzy probe for "${slug}":`, JSON.stringify(fuzzy));
     return null;
   }
 
