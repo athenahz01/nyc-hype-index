@@ -65,6 +65,12 @@ export async function scoreOneRestaurant(
         ig_comment_sentiment: score.ig_comment_sentiment,
         hype_absolute: score.hype_score,
         reality_absolute: score.reality_score,
+        // Persist signal summaries so verdicts at publish time have real
+        // material to work with (otherwise Claude refuses to write them).
+        google_summary: score.debug.googleSummary,
+        reddit_summary: score.debug.redditSummary,
+        ig_summary: score.debug.igSummary,
+        tiktok_summary: score.debug.tiktokSummary,
         scored_at: new Date().toISOString(),
         source,
       },
@@ -92,15 +98,17 @@ export type BatchResult = {
  *
  *   runBatch({offset: 0, limit: 20}) → first 20
  *   runBatch({offset: 20, limit: 20}) → next 20
+ *   runBatch({onlyUnscored: true}) → only restaurants never scored before
+ *   runBatch({staleOnly: true}) → only restaurants not scored in 7+ days
  *
  * Useful for spreading a 200-restaurant refresh over multiple sessions
  * or days without timing out.
  */
 export async function runBatch(
-  opts: { offset?: number; limit?: number; staleOnly?: boolean } = {}
+  opts: { offset?: number; limit?: number; staleOnly?: boolean; onlyUnscored?: boolean } = {}
 ): Promise<BatchResult> {
   const supabase = createAdminClient();
-  const { offset = 0, limit = 20, staleOnly = false } = opts;
+  const { offset = 0, limit = 20, staleOnly = false, onlyUnscored = false } = opts;
 
   // Fetch active restaurants in alphabetical order so offset/limit are deterministic
   let query = supabase.from("restaurants").select("*").eq("active", true).order("name");
@@ -109,6 +117,19 @@ export async function runBatch(
   if (!restaurants?.length) throw new Error("no active restaurants — run seed first");
 
   let targets = restaurants as Restaurant[];
+
+  // Optional: only score restaurants that have NEVER been scored.
+  // Useful when expanding the seed list — pay only for the new additions,
+  // never re-score the existing corpus. Cheaper than staleOnly because it
+  // doesn't depend on a recency window.
+  if (onlyUnscored) {
+    const { data: scored } = await supabase
+      .from("restaurant_latest_scores")
+      .select("restaurant_id");
+    const scoredIds = new Set((scored ?? []).map((r) => r.restaurant_id));
+    targets = targets.filter((r) => !scoredIds.has(r.id));
+    console.log(`[batch] onlyUnscored mode: ${targets.length} of ${restaurants.length} have never been scored`);
+  }
 
   // Optional: only re-score restaurants that haven't been scored in 7+ days
   if (staleOnly) {
@@ -293,9 +314,15 @@ export async function publishIssue(opts: { publish?: boolean } = {}): Promise<Pu
         finalReality: e.n.reality_normalized,
         finalGap: e.n.gap_normalized,
         isUnderrated,
-        // We don't have debug summaries in the corpus (they're scoring-time only).
-        // The verdict prompt handles missing signals OK.
-        debug: { googleSummary: "", redditSummary: "", igSummary: "", tiktokSummary: "" },
+        // Pull persisted signal summaries from the corpus. If they're empty
+        // (older rows before this migration), the verdict prompt has fallback
+        // logic.
+        debug: {
+          googleSummary: e.entry.google_summary ?? "",
+          redditSummary: e.entry.reddit_summary ?? "",
+          igSummary: e.entry.ig_summary ?? "",
+          tiktokSummary: e.entry.tiktok_summary ?? "",
+        },
       });
       withVerdicts.push({ entry: e.entry, n: e.n, verdict, isUnderrated });
     }

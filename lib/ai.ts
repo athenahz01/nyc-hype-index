@@ -149,6 +149,7 @@ Write the verdict. Rules:
 - DON'T start with the restaurant's name.
 - PROOFREAD: every word must be spelled correctly. "Fried" not "friend." "Cacio e pepe" not "cacchio." If unsure of a word, omit it.
 - DON'T mention dishes that aren't on the actual restaurant's menu. If you can't see specific menu items in the signals, write about the wait, the price, the crowd, the neighborhood, or the vibe instead.
+- NEVER explain why you can't write the verdict. NEVER reference "no signals" or "no data" or "I can't" or "without information." If signals are sparse, write a verdict based on the restaurant name, neighborhood, and the hype/reality scores — those are enough. The verdict must always sound like editorial, not like an AI talking about its constraints.
 
 Examples of the voice:
 "The lasagna pinwheel is genuinely good. The two-month wait isn't."
@@ -156,6 +157,13 @@ Examples of the voice:
 "Persian food doing the most. Earned every star without a TikTok in sight."
 "Three-hour wait for a four-dollar slice. The math has stopped mathing."
 "The dining room photographs better than it tastes. The cocktails compensate."
+"Beautiful room and a reservation harder than the rent. The kitchen is the after-party."
+
+Examples that are WRONG and FORBIDDEN:
+"I can't write this verdict because the signals are sparse."
+"Without specific signals to draw from..."
+"Based on the available data..."
+"As an AI, I..."
 
 Return ONLY the sentence, nothing else.`,
       },
@@ -163,7 +171,7 @@ Return ONLY the sentence, nothing else.`,
   });
 
   const text = message.content[0].type === "text" ? message.content[0].text : "";
-  return cleanVerdict(text);
+  return cleanVerdict(text, isUnderrated);
 }
 
 /**
@@ -172,9 +180,32 @@ Return ONLY the sentence, nothing else.`,
  *   - Fix "friend fish/chicken/etc." → "fried [same]" (a recurring Claude typo)
  *   - Fix double spaces
  *   - Cap length at 200 chars
+ *   - Detect meta-commentary leaks (e.g. "I can't write this verdict...")
+ *     and replace with a safe generic fallback so they never reach the page.
  */
-function cleanVerdict(raw: string): string {
+function cleanVerdict(raw: string, isUnderrated?: boolean): string {
   let v = raw.trim().replace(/^["']|["']$/g, "");
+
+  // Detect meta-commentary leaks. If detected, replace entirely.
+  // These patterns catch Claude refusing/explaining instead of writing.
+  const metaPatterns = [
+    /^I can'?t\b/i,
+    /^I cannot\b/i,
+    /^As an AI\b/i,
+    /no actual data/i,
+    /without specific signals/i,
+    /without (?:enough|specific|sufficient) (?:data|information|signals)/i,
+    /based on (?:the available|the limited|no) (?:data|signals|information)/i,
+    /\bthe signals (?:section )?show/i,
+  ];
+
+  if (metaPatterns.some((p) => p.test(v))) {
+    // Replace meta-commentary with a generic-but-safe verdict
+    return isUnderrated
+      ? "Quietly excellent. Locals know."
+      : "Hype outpacing reality this week.";
+  }
+
   // Common typo: "friend X" should be "fried X" when X is a food
   v = v.replace(/\bfriend\b(\s+(?:fish|chicken|rice|noodle|noodles|tofu|pork|shrimp|egg|eggs|dumpling|dumplings|ravioli|calamari))/gi, "fried$1");
   // Collapse double spaces from any of our regex replacements

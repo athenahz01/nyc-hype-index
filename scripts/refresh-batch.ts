@@ -3,7 +3,8 @@
  *
  *   npm run refresh-batch -- --offset=0 --limit=20
  *   npm run refresh-batch -- --offset=20 --limit=20
- *   npm run refresh-batch -- --limit=20 --stale-only    # only re-score stale entries (>7 days)
+ *   npm run refresh-batch -- --limit=20 --stale-only     # only re-score stale entries (>7 days)
+ *   npm run refresh-batch -- --limit=999 --only-unscored # score restaurants that have NEVER been scored
  *
  * Does NOT publish an issue. Just updates restaurant_latest_scores.
  * Use `npm run publish-issue` separately to build a leaderboard from the corpus.
@@ -21,6 +22,7 @@ function arg(name: string): string | undefined {
 const offset = parseInt(arg("offset") ?? "0", 10);
 const limit = parseInt(arg("limit") ?? "20", 10);
 const staleOnly = args.includes("--stale-only");
+const onlyUnscored = args.includes("--only-unscored");
 
 if (isNaN(offset) || offset < 0) {
   console.error("Invalid --offset");
@@ -31,7 +33,7 @@ if (isNaN(limit) || limit < 1) {
   process.exit(1);
 }
 
-runBatch({ offset, limit, staleOnly })
+runBatch({ offset, limit, staleOnly, onlyUnscored })
   .then((r) => {
     console.log("\n✓ Batch complete");
     console.log(`  Attempted: ${r.attempted}`);

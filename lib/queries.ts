@@ -116,6 +116,9 @@ export async function searchRestaurants(query: string, limit = 8): Promise<Searc
   // We do ilike first since it's a sublinear index lookup.
   const ilikePattern = `%${q}%`;
 
+  // Note: don't filter by active. Live-calculated restaurants (active=false)
+  // SHOULD appear in search results — that's how cache reuse works. The
+  // active flag only filters leaderboards.
   const { data, error } = await supabase
     .from("restaurants")
     .select(
@@ -124,7 +127,6 @@ export async function searchRestaurants(query: string, limit = 8): Promise<Searc
       latest:restaurant_latest_scores ( hype_absolute )
     `
     )
-    .eq("active", true)
     .or(`name.ilike.${ilikePattern},neighborhood.ilike.${ilikePattern}`)
     .limit(limit);
 
@@ -186,11 +188,14 @@ export type RestaurantDetail = {
 export async function fetchRestaurantDetail(slug: string): Promise<RestaurantDetail | null> {
   const supabase = createBrowserClient();
 
+  // Note: don't filter by active here. Live-calculated restaurants are
+  // inserted with active=false (so they don't appear in leaderboards
+  // until manually approved), but they SHOULD be viewable by anyone with
+  // the URL — that's how live-search delivers results.
   const { data: restaurant } = await supabase
     .from("restaurants")
     .select("*")
     .eq("slug", slug)
-    .eq("active", true)
     .maybeSingle();
 
   if (!restaurant) return null;
