@@ -192,19 +192,30 @@ export async function fetchRestaurantDetail(slug: string): Promise<RestaurantDet
   // inserted with active=false (so they don't appear in leaderboards
   // until manually approved), but they SHOULD be viewable by anyone with
   // the URL — that's how live-search delivers results.
-  const { data: restaurant } = await supabase
+  const { data: restaurant, error: rErr } = await supabase
     .from("restaurants")
     .select("*")
     .eq("slug", slug)
     .maybeSingle();
 
-  if (!restaurant) return null;
+  if (rErr) {
+    console.error(`[fetchRestaurantDetail] error reading restaurant for slug="${slug}":`, rErr);
+    return null;
+  }
+  if (!restaurant) {
+    console.warn(`[fetchRestaurantDetail] no restaurant found for slug="${slug}"`);
+    return null;
+  }
 
-  const { data: latest } = await supabase
+  console.log(`[fetchRestaurantDetail] found restaurant: ${restaurant.name} (id=${restaurant.id}, active=${restaurant.active})`);
+
+  const { data: latest, error: lErr } = await supabase
     .from("restaurant_latest_scores")
     .select("*")
     .eq("restaurant_id", restaurant.id)
     .maybeSingle();
+
+  if (lErr) console.warn(`[fetchRestaurantDetail] error reading latest scores:`, lErr);
 
   // Compute display scores by z-scoring this restaurant against the full corpus
   let display: RestaurantDetail["display"] = null;
