@@ -4,6 +4,7 @@ import SubscribeForm from "@/components/SubscribeForm";
 import SearchBar from "@/components/SearchBar";
 import BrowseTabs from "@/components/BrowseTabs";
 import Link from "next/link";
+import { Suspense } from "react";
 import {
   OCCASIONS,
   OCCASION_LABELS,
@@ -170,9 +171,13 @@ function BrowseSection({
         </div>
       </div>
 
-      {/* Tab strip below the negative margin so it sits on the section edge */}
+      {/* Tab strip below the negative margin so it sits on the section edge.
+          BrowseTabs reads useSearchParams which needs a Suspense boundary
+          during static rendering. */}
       <div className="-mx-7 max-md:-mx-5 mb-8">
-        <BrowseTabs defaultTab="occasion" />
+        <Suspense fallback={<div className="px-7 py-3 max-md:px-5" aria-hidden style={{ height: 50 }} />}>
+          <BrowseTabs defaultTab="occasion" />
+        </Suspense>
       </div>
 
       <div data-browse-panel="occasion">
