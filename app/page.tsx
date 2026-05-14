@@ -1,310 +1,289 @@
-import { fetchRestaurantDetail } from "@/lib/queries";
-import { notFound } from "next/navigation";
-import Link from "next/link";
+import { fetchOccasionHighlights } from "@/lib/queries";
+import SubmitTip from "@/components/SubmitTip";
+import SubscribeForm from "@/components/SubscribeForm";
 import SearchBar from "@/components/SearchBar";
-import { OCCASION_LABELS, CUISINE_LABELS, type Cuisine, type Occasion } from "@/lib/types";
+import Link from "next/link";
+import {
+  OCCASIONS,
+  OCCASION_LABELS,
+  OCCASION_TAGLINES,
+  type Occasion,
+  type OccasionScoreWithRestaurant,
+} from "@/lib/types";
 
-// Live-calculated restaurants need fresh data, can't pre-render
-export const dynamic = "force-dynamic";
+export const revalidate = 3600;
 
-export default async function RestaurantPage({ params }: { params: { slug: string } }) {
-  console.log(`[RestaurantPage] params=${JSON.stringify(params)}, typeof slug=${typeof params.slug}, slug.length=${params.slug?.length}`);
-  const detail = await fetchRestaurantDetail(params.slug);
-  if (!detail) {
-    console.log(`[RestaurantPage] detail is null, calling notFound() for slug="${params.slug}"`);
-    notFound();
-  }
-
-  const { restaurant, latest, display, occasionRankings } = detail;
-  const hasScores = !!latest && !!display;
+export default async function HomePage() {
+  const { issue, highlights } = await fetchOccasionHighlights(3);
+  const hasData = !!issue && Object.keys(highlights).length > 0;
 
   return (
     <main>
-      <Masthead />
+      <Masthead issueNumber={issue?.number ?? null} publishedAt={issue?.published_at ?? null} />
+      <Hero />
 
-      <section className="px-7 pt-16 pb-10 max-md:px-5 max-md:pt-10 max-md:pb-8">
-        <Link
-          href="/"
-          className="font-mono text-[11px] uppercase tracking-wider text-muted hover:text-red transition-colors"
-        >
-          ← Back to home
-        </Link>
-
-        {/* HERO: name + meta */}
-        <div className="mt-7 mb-3 flex items-end justify-between flex-wrap gap-3">
-          <h1 className="font-display font-black text-[clamp(56px,9vw,110px)] leading-[0.95] tracking-tighter">
-            {restaurant.name}
-          </h1>
-          {restaurant.price_tier && (
-            <div className="font-display font-bold text-3xl text-muted max-md:text-2xl">
-              {restaurant.price_tier}
-            </div>
-          )}
-        </div>
-
-        <div className="font-mono text-[12px] uppercase tracking-widest text-muted mb-12 flex flex-wrap gap-3 items-center max-md:text-[10px] max-md:mb-8">
-          <span>{restaurant.neighborhood}</span>
-          <span className="opacity-40">·</span>
-          <span>{capitalize(restaurant.borough)}</span>
-          {restaurant.cuisines.length > 0 && (
-            <>
-              <span className="opacity-40">·</span>
-              <span className="text-gold">
-                {restaurant.cuisines.map((c) => CUISINE_LABELS[c as Cuisine] ?? c).join(" / ")}
-              </span>
-            </>
-          )}
-          {!restaurant.active && (
-            <>
-              <span className="opacity-40">·</span>
-              <span className="text-red">Live-calculated (not in editor's index)</span>
-            </>
-          )}
-        </div>
-
-        {hasScores ? (
-          <ScoreCard display={display} latest={latest} />
-        ) : (
-          <NoScoreYet name={restaurant.name} />
-        )}
-      </section>
-
-      {/* Per-occasion rankings, if any */}
-      {hasScores && occasionRankings.length > 0 && (
-        <OccasionRankings rankings={occasionRankings} />
+      {hasData && issue ? (
+        <>
+          <StatBar
+            occasionsTracked={Object.keys(highlights).length}
+            tiktokViews={issue.total_tiktok_views}
+            reviews={issue.total_reviews}
+          />
+          <OccasionGrid highlights={highlights} />
+        </>
+      ) : (
+        <NoIssueYet />
       )}
 
-      {hasScores && latest && <SignalDetails latest={latest} />}
-
-      {/* Try another search */}
-      <section className="border-t border-ink px-7 py-16 max-md:px-5 max-md:py-12">
-        <h3 className="font-display italic font-normal text-3xl tracking-tight mb-6 max-md:text-2xl">
-          Look up another spot.
-        </h3>
-        <SearchBar variant="hero" />
-      </section>
-
+      <Methodology />
       <Footer />
     </main>
   );
 }
 
 // ============================================================
-function Masthead() {
+function Masthead({ issueNumber, publishedAt }: { issueNumber: number | null; publishedAt: string | null }) {
+  const dateLabel = publishedAt
+    ? new Date(publishedAt).toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : new Date().toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
   return (
     <header className="border-b-2 border-ink py-4 px-7 grid items-end gap-6 [grid-template-columns:1fr_auto_1fr] max-md:[grid-template-columns:1fr] max-md:gap-2 max-md:px-5">
       <div className="font-mono text-[11px] uppercase tracking-wider text-muted max-md:order-2">
-        <Link href="/" className="hover:text-red transition-colors">
-          ← Home
-        </Link>
+        <span className="live-dot" />
+        {issueNumber !== null ? <>Updated weekly · Issue №{issueNumber}</> : <>Loading first issue…</>}
       </div>
-      <Link
-        href="/"
-        className="font-display font-black text-[28px] tracking-tight text-center max-md:order-1 max-md:text-left max-md:text-[22px]"
-      >
+      <div className="font-display font-black text-[28px] tracking-tight text-center max-md:order-1 max-md:text-left max-md:text-[22px]">
         <span className="italic font-normal text-lg mr-1 text-muted">The</span>
         NYC Hype Index
-      </Link>
-      <div className="font-mono text-[11px] uppercase tracking-wider text-muted text-right max-md:order-3 max-md:text-left" />
+      </div>
+      <div className="font-mono text-[11px] uppercase tracking-wider text-muted text-right max-md:order-3 max-md:text-left">
+        {dateLabel}
+      </div>
     </header>
   );
 }
 
-function ScoreCard({ display, latest }: { display: NonNullable<Awaited<ReturnType<typeof fetchRestaurantDetail>>>["display"]; latest: any }) {
-  if (!display || !latest) return null;
-  const verdictTag = display.is_calibrated
-    ? { label: "Calibrated", color: "text-muted", subtitle: "Algorithm and locals agree" }
-    : display.is_underrated
-    ? { label: "Quietly Underrated", color: "text-gold", subtitle: "Locals know · TikTok hasn't found it" }
-    : { label: "Overrated", color: "text-red", subtitle: "Hype outpacing reality" };
-
+function Hero() {
   return (
-    <>
-      <div className="mb-10 inline-block">
-        <span className={`font-mono text-[11px] uppercase tracking-widest ${verdictTag.color}`}>
-          {verdictTag.label}
-        </span>
-        <div className="font-display italic text-xl text-ink-soft mt-1 max-md:text-lg">
-          {verdictTag.subtitle}
+    <section className="hero py-16 px-7 border-b border-ink text-center relative overflow-hidden max-md:py-10 max-md:px-5">
+      <span className="inline-block font-mono text-[11px] uppercase tracking-widest text-red mb-6 border border-red px-3.5 py-1.5 rounded-full bg-red/5 max-md:text-[10px] max-md:px-3 max-md:py-1.5 max-md:mb-5">
+        A weekly autopsy of NYC restaurant hype
+      </span>
+      <h1 className="font-display font-black text-[clamp(46px,8vw,108px)] leading-[0.92] tracking-tighter mx-auto max-w-[16ch]">
+        Is it <em className="italic font-normal text-red">overrated</em>?
+      </h1>
+      <p className="mt-7 mx-auto max-w-[52ch] text-[17px] leading-relaxed text-ink-soft max-md:text-[15px]">
+        We measure the gap between how viral a NYC restaurant is on TikTok and Instagram, and what people who actually eat there say.{" "}
+        <strong className="font-semibold text-ink">The bigger the gap, the bigger the hype.</strong>
+      </p>
+      <div className="mt-10 max-md:mt-7">
+        <SearchBar variant="hero" />
+        <div className="mt-3 font-mono text-[10px] uppercase tracking-widest text-muted">
+          Try "Carbone" · "Wu's Wonton King" · or anywhere else
         </div>
       </div>
-
-      <div className="grid grid-cols-3 gap-6 max-md:grid-cols-1 max-md:gap-3">
-        <Score label="Hype" value={display.hype} color="ink" bar />
-        <Score label="Reality" value={display.reality} color="gold" bar />
-        <Score
-          label="Gap"
-          value={Math.abs(display.gap)}
-          sign={display.is_underrated ? "−" : ""}
-          arrow={display.is_underrated ? "↓" : "↑"}
-          color={display.is_underrated ? "gold" : display.is_calibrated ? "ink" : "red"}
-        />
-      </div>
-    </>
+    </section>
   );
 }
 
-function Score({
-  label,
-  value,
-  color,
-  sign = "",
-  arrow,
-  bar = false,
+function StatBar({
+  occasionsTracked,
+  tiktokViews,
+  reviews,
 }: {
-  label: string;
-  value: number;
-  color: "ink" | "gold" | "red";
-  sign?: string;
-  arrow?: string;
-  bar?: boolean;
+  occasionsTracked: number;
+  tiktokViews: number;
+  reviews: number;
 }) {
-  const colorClass =
-    color === "red" ? "text-red" : color === "gold" ? "text-gold" : "text-ink";
-  const barColor = color === "red" ? "bg-red" : color === "gold" ? "bg-gold" : "bg-ink";
+  const fmt = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+    return n.toLocaleString();
+  };
+
+  const stats = [
+    { num: occasionsTracked.toString(), label: "Occasions ranked", red: true },
+    { num: fmt(tiktokViews), label: "TikTok views analyzed" },
+    { num: fmt(reviews), label: "Local reviews parsed" },
+    { num: "7d", label: "Until next update" },
+  ];
 
   return (
-    <div className="border border-ink/30 p-7 max-md:p-5">
-      <div className="font-mono text-[11px] uppercase tracking-widest text-muted mb-3">
-        {label}
-      </div>
-      <div className={`font-display font-black text-[64px] leading-none tracking-tighter ${colorClass} max-md:text-5xl`}>
-        {sign}
-        {value.toFixed(0)}
-        {arrow && <span className="text-2xl ml-2 font-mono font-normal align-middle">{arrow}</span>}
-      </div>
-      {bar && (
-        <div className="h-1 bg-ink/10 mt-5 relative overflow-hidden">
-          <div className={`absolute inset-y-0 left-0 ${barColor}`} style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+    <div className="grid grid-cols-4 border-b border-ink bg-paper-2 max-md:grid-cols-2">
+      {stats.map((s, i) => (
+        <div
+          key={i}
+          className={`p-6 border-r border-ink last:border-r-0 max-md:border-b ${
+            i % 2 === 1 ? "max-md:border-r-0" : ""
+          } ${i >= 2 ? "max-md:border-b-0" : ""}`}
+        >
+          <div className={`font-display font-semibold text-4xl leading-none tracking-tight ${s.red ? "text-red" : ""}`}>
+            {s.num}
+          </div>
+          <div className="font-mono text-[10px] uppercase tracking-widest text-muted mt-2">{s.label}</div>
         </div>
-      )}
+      ))}
     </div>
   );
 }
 
-function OccasionRankings({
-  rankings,
-}: {
-  rankings: NonNullable<Awaited<ReturnType<typeof fetchRestaurantDetail>>>["occasionRankings"];
-}) {
+// ============================================================
+// THE BIG GRID
+// ============================================================
+function OccasionGrid({ highlights }: { highlights: Record<string, OccasionScoreWithRestaurant[]> }) {
   return (
-    <section className="border-t border-ink px-7 py-14 max-md:px-5 max-md:py-10">
-      <h2 className="font-display italic font-normal text-4xl tracking-tight mb-7 max-md:text-3xl">
-        Rankings in this week's issue.
-      </h2>
-      <div className="space-y-3">
-        {rankings.map((r) => (
-          <Link
-            key={r.occasion}
-            href={`/occasion/${r.occasion}`}
-            className="block border border-ink/30 p-5 hover:bg-ink hover:text-paper transition-colors group max-md:p-4"
-          >
-            <div className="flex justify-between items-baseline mb-2 flex-wrap gap-2">
-              <div>
-                <span
-                  className={`font-mono text-[11px] uppercase tracking-widest mb-1 inline-block ${
-                    r.is_underrated ? "text-gold group-hover:text-gold" : "text-red group-hover:text-red"
-                  }`}
-                >
-                  {r.is_underrated ? "Underrated" : "Overrated"} · Rank #{r.rank}
-                </span>
-                <div className="font-display font-bold text-2xl tracking-tight max-md:text-xl">
-                  {OCCASION_LABELS[r.occasion as Occasion]}
-                </div>
-              </div>
-              <div className={`font-display font-black text-3xl ${r.is_underrated ? "text-gold" : "text-red"} max-md:text-2xl`}>
-                {r.is_underrated ? "−" : ""}
-                {Math.abs(r.gap).toFixed(0)}
-                <span className="text-sm ml-1 font-mono font-normal">
-                  {r.is_underrated ? "↓" : "↑"}
-                </span>
-              </div>
-            </div>
-            {r.verdict && (
-              <div className="font-display italic text-base text-ink-soft group-hover:text-paper/80 max-md:text-sm">
-                "{r.verdict}"
-              </div>
-            )}
-          </Link>
+    <section className="px-7 py-16 max-md:px-5 max-md:py-12">
+      <div className="flex justify-between items-baseline pb-8 max-md:flex-col max-md:items-start max-md:gap-2">
+        <h2 className="font-display font-extrabold text-5xl tracking-tight max-md:text-3xl">
+          Or browse by <em className="italic font-normal">occasion</em>.
+        </h2>
+        <div className="font-mono text-[11px] uppercase tracking-wider text-muted max-md:text-[10px]">
+          This week's most overrated · Click for the full ranking
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">
+        {OCCASIONS.map((o) => (
+          <OccasionCard key={o} occasion={o} top={highlights[o] ?? []} />
         ))}
       </div>
     </section>
   );
 }
 
-function SignalDetails({ latest }: { latest: any }) {
+function OccasionCard({ occasion, top }: { occasion: Occasion; top: OccasionScoreWithRestaurant[] }) {
   return (
-    <section className="border-t border-ink bg-paper-2 px-7 py-14 max-md:px-5 max-md:py-10">
-      <h2 className="font-display italic font-normal text-4xl tracking-tight mb-7 max-md:text-3xl">
-        The raw signals.
-      </h2>
-      <div className="grid grid-cols-4 gap-4 max-md:grid-cols-2">
-        <Signal label="TikTok views" value={fmt(latest.tiktok_views)} />
-        <Signal label="Peak single video" value={fmt(latest.tiktok_peak_views)} />
-        <Signal label="Google rating" value={latest.google_rating ? `${latest.google_rating}★` : "—"} />
-        <Signal label="Google reviews" value={fmt(latest.google_reviews)} />
-        <Signal label="Reddit mentions" value={String(latest.reddit_mentions)} />
-        <Signal label="IG posts" value={String(latest.ig_posts)} />
-        <Signal
-          label="TikTok sentiment"
-          value={latest.tiktok_caption_sentiment != null ? Math.round(latest.tiktok_caption_sentiment).toString() : "—"}
-        />
-        <Signal
-          label="Google sentiment"
-          value={latest.google_sentiment != null ? Math.round(latest.google_sentiment).toString() : "—"}
-        />
+    <Link
+      href={`/occasion/${occasion}`}
+      className="block border border-ink p-7 transition-all hover:bg-ink hover:text-paper group max-md:p-5"
+    >
+      <div className="flex items-baseline justify-between mb-1">
+        <h3 className="font-display font-extrabold text-3xl tracking-tight max-md:text-2xl">
+          {OCCASION_LABELS[occasion]}
+        </h3>
+        <span className="font-mono text-[11px] uppercase tracking-wider text-muted group-hover:text-paper/60 max-md:text-[10px]">
+          View →
+        </span>
       </div>
-      <div className="mt-7 font-mono text-[10px] uppercase tracking-widest text-muted">
-        Scored {new Date(latest.scored_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
-        {latest.source === "live_search" && " · via live calculation"}
+      <p className="font-display italic text-base leading-snug text-ink-soft group-hover:text-paper/80 mb-5 max-md:text-sm">
+        {OCCASION_TAGLINES[occasion]}
+      </p>
+      {top.length > 0 ? (
+        <ol className="space-y-2">
+          {top.slice(0, 3).map((s, i) => (
+            <li key={s.id} className="flex items-baseline gap-3">
+              <span className="font-display font-bold text-lg text-red group-hover:text-paper w-5 max-md:text-base">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="flex-1 font-display font-bold text-lg leading-tight max-md:text-base">
+                {s.restaurant.name}
+                {s.restaurant.price_tier && (
+                  <span className="ml-2 font-mono text-[11px] text-muted group-hover:text-paper/60 max-md:text-[10px]">
+                    {s.restaurant.price_tier}
+                  </span>
+                )}
+              </span>
+              <span className="font-mono text-[12px] text-red group-hover:text-paper max-md:text-[11px]">
+                {Math.abs(s.gap).toFixed(0)}↑
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="font-mono text-[11px] uppercase tracking-wider text-muted">
+          Coming this week
+        </div>
+      )}
+    </Link>
+  );
+}
+
+// ============================================================
+function Methodology() {
+  return (
+    <section className="border-t-2 border-ink bg-ink text-paper py-20 px-7 max-md:py-14 max-md:px-5">
+      <div className="max-w-[880px] mx-auto">
+        <h2 className="font-display italic font-normal text-5xl tracking-tight leading-none mb-8 max-md:text-3xl">
+          How we <span className="border-b-2 border-red pb-1">measure hype</span>.
+        </h2>
+        <p className="text-[18px] leading-relaxed text-paper/90 max-w-[60ch]">
+          The Hype Index isn't an opinion. It's a number. Every week we pull five signals for every restaurant we track, score the diner sentiment from each, and z-score the gap between social hype and ground truth across the entire issue. Restaurants where the algorithm and locals roughly agree don't appear at all — only the ones where the gap is real.
+        </p>
+        <div className="bg-paper/5 border-l-[3px] border-red px-7 py-6 my-9 font-mono text-sm leading-loose max-md:px-5 max-md:py-5 max-md:text-xs">
+          <span className="text-red">Hype</span> = TikTok peak views × caption sentiment + Instagram engagement
+          <br />
+          <span className="text-red">Reality</span> = Google reviews (volume-weighted) + Reddit (when ≥3 mentions) + IG comments
+          <br />
+          <span className="text-red">Gap</span> = Hype − Reality, both z-scored against the issue
+          <br />
+          <em className="text-paper/70">|gap| &lt; 10 is "calibrated" — algorithm and locals agree, hidden from leaderboards.</em>
+        </div>
+        <div className="grid grid-cols-3 gap-9 mt-12 max-md:grid-cols-1 max-md:gap-7">
+          <Method
+            num="01"
+            title="Hype Signal"
+            body="TikTok peak views and Instagram engagement, dampened by caption sentiment — viral roasts of overpriced spots count as agreement-with-thesis, not as hype. We're measuring 'algorithm loves it,' not 'algorithm is loud.'"
+          />
+          <Method
+            num="02"
+            title="Reality Signal"
+            body="Long-form Google reviews from local guides, weighted by review count (a 4.7★ on 8K reviews beats a 4.7★ on 80). Reddit threads from r/AskNYC and r/nyc when there are enough to be meaningful. Tourist content deweighted."
+          />
+          <Method
+            num="03"
+            title="Z-Scored Gap"
+            body="Hype and Reality are both z-scored across the entire issue, so a +50 gap on Date Night means the same as a +50 gap on Brunch. Restaurants where the gap is small (within ±10) don't appear — they're calibrated, not interesting."
+          />
+        </div>
       </div>
     </section>
   );
 }
 
-function Signal({ label, value }: { label: string; value: string }) {
+function Method({ num, title, body }: { num: string; title: string; body: string }) {
   return (
-    <div className="border border-ink/20 bg-paper p-4">
-      <div className="font-mono text-[10px] uppercase tracking-widest text-muted mb-2">{label}</div>
-      <div className="font-display font-bold text-2xl tracking-tight max-md:text-xl">{value}</div>
-    </div>
-  );
-}
-
-function NoScoreYet({ name }: { name: string }) {
-  return (
-    <div className="border border-ink/30 p-10 text-center max-md:p-6">
-      <div className="font-display text-6xl text-muted opacity-40 mb-4">∅</div>
-      <h2 className="font-display italic text-2xl text-ink-soft">
-        We haven't scored {name} yet.
-      </h2>
-      <p className="font-mono text-[11px] uppercase tracking-widest text-muted mt-3">
-        Search again to trigger a live calculation
-      </p>
+    <div>
+      <div className="font-mono text-[11px] uppercase tracking-widest text-red mb-3.5">
+        {num} · {title}
+      </div>
+      <p className="text-[15px] leading-relaxed text-paper/85">{body}</p>
     </div>
   );
 }
 
 function Footer() {
   return (
-    <footer className="border-t border-ink px-7 py-9 flex justify-between items-center flex-wrap gap-4 font-mono text-[11px] uppercase tracking-wider text-muted max-md:px-5">
-      <Link href="/" className="hover:text-red transition-colors">
-        ← All occasions
-      </Link>
-      <Link href="/archive" className="hover:text-red transition-colors">
-        Archive →
-      </Link>
+    <footer className="px-7 py-9 border-t border-ink flex justify-between items-start flex-wrap gap-6 font-mono text-[11px] uppercase tracking-wider text-muted max-md:px-5 max-md:flex-col">
+      <div className="flex flex-col gap-2">
+        <div>© {new Date().getFullYear()} The NYC Hype Index · Made for screenshots</div>
+        <div className="text-muted/70">Not affiliated with any of the restaurants listed.</div>
+      </div>
+      <SubscribeForm />
+      <SubmitTip />
     </footer>
   );
 }
 
-function capitalize(s: string): string {
-  if (!s) return s;
-  return s.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-}
-
-function fmt(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
-  return n.toLocaleString();
+function NoIssueYet() {
+  return (
+    <section className="px-7 py-32 text-center max-md:px-5 max-md:py-20">
+      <div className="font-display text-7xl text-muted opacity-40 mb-6">∅</div>
+      <h2 className="font-display italic text-3xl text-ink-soft mb-3 max-md:text-2xl">
+        First issue dropping soon.
+      </h2>
+      <p className="font-mono text-[11px] uppercase tracking-widest text-muted max-w-md mx-auto leading-loose">
+        We're crunching this week's numbers. Subscribe below to get notified when the first leaderboards go live.
+      </p>
+    </section>
+  );
 }
