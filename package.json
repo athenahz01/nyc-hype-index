@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "seed": "tsx --env-file=.env.local scripts/seed.ts",
+    "send-digest": "tsx --env-file=.env.local scripts/send-digest.ts",
     "refresh": "tsx --env-file=.env.local scripts/refresh.ts",
     "refresh-batch": "tsx --env-file=.env.local scripts/refresh-batch.ts",
     "publish-issue": "tsx --env-file=.env.local scripts/publish-issue.ts"
@@ -15,10 +16,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
     "@supabase/supabase-js": "^2.45.0",
+    "@vercel/analytics": "^2.0.1",
+    "@vercel/speed-insights": "^2.0.0",
     "apify-client": "^2.9.0",
     "next": "14.2.33",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "react-dom": "^18.3.0",
+    "resend": "^6.12.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

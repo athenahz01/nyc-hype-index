@@ -7,6 +7,7 @@ import type {
   Cuisine,
 } from "@/lib/types";
 import { CUISINE_LABELS } from "@/lib/types";
+import VoteButtons from "./VoteButtons";
 
 type Props = {
   scores: OccasionScoreWithRestaurant[];
@@ -198,6 +199,12 @@ function Row({
             {score.verdict}
           </div>
         )}
+        <div className="mt-3 max-md:mt-2">
+          <VoteButtons
+            restaurantId={score.restaurant_id}
+            occasion={score.occasion}
+          />
+        </div>
       </div>
 
       <Scorecell value={score.hype_score} barColor="bg-ink" className="max-md:hidden" />
