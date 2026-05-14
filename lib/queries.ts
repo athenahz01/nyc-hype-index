@@ -3,6 +3,7 @@ import { normalizeIssue, GAP_THRESHOLD } from "./scoring";
 import type {
   Issue,
   Occasion,
+  Cuisine,
   OccasionScoreWithRestaurant,
   Restaurant,
   LatestScore,
@@ -81,6 +82,235 @@ export async function fetchOccasionHighlights(
     if (highlights[s.occasion].length < topN) highlights[s.occasion].push(s);
   }
   return { issue, highlights };
+}
+
+// ============================================================
+// Cuisine leaderboards
+// ============================================================
+
+export type CuisineLeaderboard = {
+  issue: Issue;
+  cuisine: Cuisine;
+  scores: OccasionScoreWithRestaurant[];
+} | null;
+
+/**
+ * Build a cuisine leaderboard from the latest issue.
+ *
+ * Approach: pull all occasion_scores rows for restaurants whose cuisines
+ * array contains the target cuisine, then collapse to ONE row per
+ * restaurant (the row with the largest |gap|, i.e. the strongest
+ * editorial signal). This mirrors the occasion page layout but slices
+ * the corpus by cuisine instead.
+ *
+ * Sorted: overrated first (descending by gap), underrated second
+ * (ascending by gap so most-negative is first).
+ */
+export async function fetchCuisineLeaderboard(cuisine: Cuisine): Promise<CuisineLeaderboard> {
+  const supabase = createBrowserClient();
+  const issue = await fetchLatestIssue();
+  if (!issue) return null;
+
+  // Pull all occasion scores joined with restaurants filtered by cuisine.
+  // We get one row PER (restaurant, occasion) pair — multiple rows per restaurant.
+  const { data: rows, error } = await supabase
+    .from("occasion_scores")
+    .select(
+      `
+      *,
+      restaurant:restaurants!inner ( slug, name, neighborhood, borough, cuisines, price_tier )
+    `
+    )
+    .eq("issue_id", issue.id)
+    .contains("restaurant.cuisines", [cuisine]);
+
+  if (error) {
+    console.error("[fetchCuisineLeaderboard]", error);
+    return { issue, cuisine, scores: [] };
+  }
+
+  // Collapse to one row per restaurant: the row with max |gap|.
+  // This becomes the "headline" entry for this restaurant on this cuisine page.
+  const bestByRestaurant = new Map<string, OccasionScoreWithRestaurant>();
+  for (const r of (rows ?? []) as unknown as OccasionScoreWithRestaurant[]) {
+    const existing = bestByRestaurant.get(r.restaurant_id);
+    if (!existing || Math.abs(r.gap) > Math.abs(existing.gap)) {
+      bestByRestaurant.set(r.restaurant_id, r);
+    }
+  }
+
+  // Sort: overrated first (gap desc), underrated second (gap asc)
+  const collapsed = Array.from(bestByRestaurant.values());
+  collapsed.sort((a, b) => {
+    // Underrated entries (is_underrated=true) go to bottom
+    if (a.is_underrated !== b.is_underrated) {
+      return a.is_underrated ? 1 : -1;
+    }
+    // Within each section: overrated sorted by gap desc, underrated by gap asc
+    if (a.is_underrated) {
+      return a.gap - b.gap; // most-negative first
+    }
+    return b.gap - a.gap; // most-positive first
+  });
+
+  // Re-rank within each section so the UI shows 01, 02, 03 cleanly
+  let overratedRank = 0;
+  let underratedRank = 0;
+  for (const s of collapsed) {
+    if (s.is_underrated) {
+      underratedRank++;
+      s.rank = underratedRank;
+    } else {
+      overratedRank++;
+      s.rank = overratedRank;
+    }
+  }
+
+  return { issue, cuisine, scores: collapsed };
+}
+
+// ============================================================
+// Neighborhood leaderboards
+// ============================================================
+
+export type NeighborhoodLeaderboard = {
+  issue: Issue;
+  neighborhood: string;
+  scores: OccasionScoreWithRestaurant[];
+} | null;
+
+export async function fetchNeighborhoodLeaderboard(
+  neighborhood: string
+): Promise<NeighborhoodLeaderboard> {
+  const supabase = createBrowserClient();
+  const issue = await fetchLatestIssue();
+  if (!issue) return null;
+
+  const { data: rows, error } = await supabase
+    .from("occasion_scores")
+    .select(
+      `
+      *,
+      restaurant:restaurants!inner ( slug, name, neighborhood, borough, cuisines, price_tier )
+    `
+    )
+    .eq("issue_id", issue.id)
+    .eq("restaurant.neighborhood", neighborhood);
+
+  if (error) {
+    console.error("[fetchNeighborhoodLeaderboard]", error);
+    return { issue, neighborhood, scores: [] };
+  }
+
+  // Same collapse + sort logic as cuisine
+  const bestByRestaurant = new Map<string, OccasionScoreWithRestaurant>();
+  for (const r of (rows ?? []) as unknown as OccasionScoreWithRestaurant[]) {
+    const existing = bestByRestaurant.get(r.restaurant_id);
+    if (!existing || Math.abs(r.gap) > Math.abs(existing.gap)) {
+      bestByRestaurant.set(r.restaurant_id, r);
+    }
+  }
+
+  const collapsed = Array.from(bestByRestaurant.values());
+  collapsed.sort((a, b) => {
+    if (a.is_underrated !== b.is_underrated) {
+      return a.is_underrated ? 1 : -1;
+    }
+    if (a.is_underrated) return a.gap - b.gap;
+    return b.gap - a.gap;
+  });
+
+  let overratedRank = 0;
+  let underratedRank = 0;
+  for (const s of collapsed) {
+    if (s.is_underrated) {
+      underratedRank++;
+      s.rank = underratedRank;
+    } else {
+      overratedRank++;
+      s.rank = overratedRank;
+    }
+  }
+
+  return { issue, neighborhood, scores: collapsed };
+}
+
+// ============================================================
+// Browse data — for home page tabbed navigation
+// ============================================================
+
+export type BrowseFacet = {
+  slug: string;
+  label: string;
+  topOverrated: OccasionScoreWithRestaurant | null;
+  totalCount: number;
+};
+
+/**
+ * Get all cuisines + neighborhoods that have at least one ranked entry
+ * in the latest issue, with the #1 overrated pick for each (for preview).
+ */
+export async function fetchBrowseFacets(): Promise<{
+  issue: Issue | null;
+  cuisines: BrowseFacet[];
+  neighborhoods: BrowseFacet[];
+}> {
+  const issue = await fetchLatestIssue();
+  if (!issue) return { issue: null, cuisines: [], neighborhoods: [] };
+
+  const supabase = createBrowserClient();
+  const { data: rows } = await supabase
+    .from("occasion_scores")
+    .select(
+      `
+      *,
+      restaurant:restaurants!inner ( slug, name, neighborhood, borough, cuisines, price_tier )
+    `
+    )
+    .eq("issue_id", issue.id)
+    .eq("is_underrated", false)
+    .order("gap", { ascending: false });
+
+  const cuisineMap = new Map<string, { count: Set<string>; top: OccasionScoreWithRestaurant | null }>();
+  const nbhdMap = new Map<string, { count: Set<string>; top: OccasionScoreWithRestaurant | null }>();
+
+  for (const r of (rows ?? []) as unknown as OccasionScoreWithRestaurant[]) {
+    // Cuisines: a restaurant may have multiple
+    for (const c of r.restaurant.cuisines ?? []) {
+      if (!cuisineMap.has(c)) cuisineMap.set(c, { count: new Set(), top: null });
+      const entry = cuisineMap.get(c)!;
+      entry.count.add(r.restaurant_id);
+      if (!entry.top) entry.top = r; // since we ordered by gap desc, first wins
+    }
+    // Neighborhood: one per restaurant
+    const n = r.restaurant.neighborhood;
+    if (n && n !== "TBD") {
+      if (!nbhdMap.has(n)) nbhdMap.set(n, { count: new Set(), top: null });
+      const entry = nbhdMap.get(n)!;
+      entry.count.add(r.restaurant_id);
+      if (!entry.top) entry.top = r;
+    }
+  }
+
+  const cuisines: BrowseFacet[] = Array.from(cuisineMap.entries())
+    .map(([slug, v]) => ({
+      slug,
+      label: slug.charAt(0).toUpperCase() + slug.slice(1),
+      topOverrated: v.top,
+      totalCount: v.count.size,
+    }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  const neighborhoods: BrowseFacet[] = Array.from(nbhdMap.entries())
+    .map(([slug, v]) => ({
+      slug,
+      label: slug,
+      topOverrated: v.top,
+      totalCount: v.count.size,
+    }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  return { issue, cuisines, neighborhoods };
 }
 
 export async function listPublishedIssues(): Promise<{ number: number; published_at: string }[]> {

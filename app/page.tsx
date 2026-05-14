@@ -1,13 +1,16 @@
-import { fetchOccasionHighlights } from "@/lib/queries";
+import { fetchOccasionHighlights, fetchBrowseFacets, type BrowseFacet } from "@/lib/queries";
 import SubmitTip from "@/components/SubmitTip";
 import SubscribeForm from "@/components/SubscribeForm";
 import SearchBar from "@/components/SearchBar";
+import BrowseTabs from "@/components/BrowseTabs";
 import Link from "next/link";
 import {
   OCCASIONS,
   OCCASION_LABELS,
   OCCASION_TAGLINES,
+  CUISINE_LABELS,
   type Occasion,
+  type Cuisine,
   type OccasionScoreWithRestaurant,
 } from "@/lib/types";
 
@@ -15,6 +18,7 @@ export const revalidate = 3600;
 
 export default async function HomePage() {
   const { issue, highlights } = await fetchOccasionHighlights(3);
+  const facets = await fetchBrowseFacets();
   const hasData = !!issue && Object.keys(highlights).length > 0;
 
   return (
@@ -29,7 +33,11 @@ export default async function HomePage() {
             tiktokViews={issue.total_tiktok_views}
             reviews={issue.total_reviews}
           />
-          <OccasionGrid highlights={highlights} />
+          <BrowseSection
+            highlights={highlights}
+            cuisines={facets.cuisines}
+            neighborhoods={facets.neighborhoods}
+          />
         </>
       ) : (
         <NoIssueYet />
@@ -139,25 +147,159 @@ function StatBar({
 }
 
 // ============================================================
-// THE BIG GRID
+// THE BIG BROWSE — three tabbed grids
 // ============================================================
-function OccasionGrid({ highlights }: { highlights: Record<string, OccasionScoreWithRestaurant[]> }) {
+
+function BrowseSection({
+  highlights,
+  cuisines,
+  neighborhoods,
+}: {
+  highlights: Record<string, OccasionScoreWithRestaurant[]>;
+  cuisines: BrowseFacet[];
+  neighborhoods: BrowseFacet[];
+}) {
   return (
-    <section className="px-7 py-16 max-md:px-5 max-md:py-12">
-      <div className="flex justify-between items-baseline pb-8 max-md:flex-col max-md:items-start max-md:gap-2">
+    <section className="px-7 pt-16 pb-16 max-md:px-5 max-md:pt-12 max-md:pb-12">
+      <div className="flex justify-between items-baseline pb-6 max-md:flex-col max-md:items-start max-md:gap-2">
         <h2 className="font-display font-extrabold text-5xl tracking-tight max-md:text-3xl">
-          Or browse by <em className="italic font-normal">occasion</em>.
+          Browse by <em className="italic font-normal">slice</em>.
         </h2>
         <div className="font-mono text-[11px] uppercase tracking-wider text-muted max-md:text-[10px]">
           This week's most overrated · Click for the full ranking
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">
-        {OCCASIONS.map((o) => (
-          <OccasionCard key={o} occasion={o} top={highlights[o] ?? []} />
-        ))}
+
+      {/* Tab strip below the negative margin so it sits on the section edge */}
+      <div className="-mx-7 max-md:-mx-5 mb-8">
+        <BrowseTabs defaultTab="occasion" />
+      </div>
+
+      <div data-browse-panel="occasion">
+        <OccasionGrid highlights={highlights} />
+      </div>
+      <div data-browse-panel="cuisine">
+        <CuisineGrid cuisines={cuisines} />
+      </div>
+      <div data-browse-panel="neighborhood">
+        <NeighborhoodGrid neighborhoods={neighborhoods} />
       </div>
     </section>
+  );
+}
+
+// ============================================================
+function OccasionGrid({ highlights }: { highlights: Record<string, OccasionScoreWithRestaurant[]> }) {
+  return (
+    <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">
+      {OCCASIONS.map((o) => (
+        <OccasionCard key={o} occasion={o} top={highlights[o] ?? []} />
+      ))}
+    </div>
+  );
+}
+
+function CuisineGrid({ cuisines }: { cuisines: BrowseFacet[] }) {
+  if (cuisines.length === 0) {
+    return (
+      <div className="font-mono text-[11px] uppercase tracking-widest text-muted py-12 text-center max-md:text-[10px]">
+        No cuisines ranked this week.
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">
+      {cuisines.map((c) => (
+        <FacetCard
+          key={c.slug}
+          href={`/cuisine/${c.slug}`}
+          label={CUISINE_LABELS[c.slug as Cuisine] ?? c.label}
+          count={c.totalCount}
+          top={c.topOverrated}
+          unit="restaurant"
+        />
+      ))}
+    </div>
+  );
+}
+
+function NeighborhoodGrid({ neighborhoods }: { neighborhoods: BrowseFacet[] }) {
+  if (neighborhoods.length === 0) {
+    return (
+      <div className="font-mono text-[11px] uppercase tracking-widest text-muted py-12 text-center max-md:text-[10px]">
+        No neighborhoods ranked this week.
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1 max-md:gap-4">
+      {neighborhoods.map((n) => (
+        <FacetCard
+          key={n.slug}
+          href={`/neighborhood/${encodeURIComponent(n.slug.replace(/\s+/g, "-"))}`}
+          label={n.label}
+          count={n.totalCount}
+          top={n.topOverrated}
+          unit="restaurant"
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Single browse card used by both Cuisine and Neighborhood grids.
+ * Mirrors the visual rhythm of OccasionCard so the tabs feel like
+ * variations of the same idea.
+ */
+function FacetCard({
+  href,
+  label,
+  count,
+  top,
+  unit,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  top: OccasionScoreWithRestaurant | null;
+  unit: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="block border border-ink p-7 transition-all hover:bg-ink hover:text-paper group max-md:p-5"
+    >
+      <div className="flex items-baseline justify-between mb-1">
+        <h3 className="font-display font-extrabold text-3xl tracking-tight max-md:text-2xl">
+          {label}
+        </h3>
+        <span className="font-mono text-[11px] uppercase tracking-wider text-muted group-hover:text-paper/60 max-md:text-[10px]">
+          View →
+        </span>
+      </div>
+      <p className="font-display italic text-base leading-snug text-ink-soft group-hover:text-paper/80 mb-5 max-md:text-sm">
+        {count} {unit}
+        {count === 1 ? "" : "s"} ranked
+      </p>
+      {top ? (
+        <div className="flex items-baseline gap-3">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted group-hover:text-paper/60 max-md:text-[9px]">
+            Most overrated
+          </span>
+          <span className="flex-1 font-display font-bold text-lg leading-tight max-md:text-base">
+            {top.restaurant.name}
+          </span>
+          <span className="font-mono text-[12px] text-red group-hover:text-paper max-md:text-[11px]">
+            +{Math.abs(top.gap).toFixed(0)}↑
+          </span>
+        </div>
+      ) : (
+        <div className="font-mono text-[11px] uppercase tracking-wider text-muted">
+          Coming this week
+        </div>
+      )}
+    </Link>
   );
 }
 
