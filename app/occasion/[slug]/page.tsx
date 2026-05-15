@@ -1,6 +1,7 @@
 import { fetchOccasionLeaderboard } from "@/lib/queries";
 import OccasionLeaderboard from "@/components/OccasionLeaderboard";
 import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   OCCASIONS,
@@ -10,10 +11,37 @@ import {
   type Cuisine,
 } from "@/lib/types";
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://nyc-hype-index.vercel.app";
+
 export const revalidate = 3600;
 
 export async function generateStaticParams() {
   return OCCASIONS.map((o) => ({ slug: o }));
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { slug: string };
+}): Promise<Metadata> {
+  const occasion = params.slug as Occasion;
+  if (!OCCASIONS.includes(occasion)) return { title: "The NYC Hype Index" };
+  const label = OCCASION_LABELS[occasion];
+  const title = `${label}, ranked by data — The NYC Hype Index`;
+  const description = `This week's most overrated and quietly underrated ${label.toLowerCase()} restaurants in NYC.`;
+  const ogImage = `${SITE_URL}/api/og/leaderboard?occasion=${encodeURIComponent(occasion)}`;
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `${SITE_URL}/occasion/${occasion}`,
+      images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
+    },
+    twitter: { card: "summary_large_image", title, description, images: [ogImage] },
+  };
 }
 
 export default async function OccasionPage({ params }: { params: { slug: string } }) {

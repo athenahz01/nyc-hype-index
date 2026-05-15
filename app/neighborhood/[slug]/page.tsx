@@ -1,8 +1,11 @@
 import { fetchNeighborhoodLeaderboard, fetchBrowseFacets } from "@/lib/queries";
 import OccasionLeaderboard from "@/components/OccasionLeaderboard";
 import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { Cuisine } from "@/lib/types";
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://nyc-hype-index.vercel.app";
 
 // Neighborhoods are data-driven, so we re-validate hourly rather than
 // generating static params (the corpus may add neighborhoods over time).
@@ -13,6 +16,29 @@ export const revalidate = 3600;
 // display string. We decode and lookup directly.
 function decodeNeighborhood(slug: string): string {
   return decodeURIComponent(slug).replace(/-/g, " ");
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { slug: string };
+}): Promise<Metadata> {
+  const label = decodeNeighborhood(params.slug);
+  const title = `${label}, ranked by data — The NYC Hype Index`;
+  const description = `This week's most overrated and quietly underrated restaurants in ${label}.`;
+  const ogImage = `${SITE_URL}/api/og/leaderboard?neighborhood=${encodeURIComponent(params.slug)}`;
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `${SITE_URL}/neighborhood/${params.slug}`,
+      images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
+    },
+    twitter: { card: "summary_large_image", title, description, images: [ogImage] },
+  };
 }
 
 function encodeNeighborhood(name: string): string {

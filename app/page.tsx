@@ -5,6 +5,7 @@ import SearchBar from "@/components/SearchBar";
 import BrowseTabs from "@/components/BrowseTabs";
 import Link from "next/link";
 import { Suspense } from "react";
+import type { Metadata } from "next";
 import {
   OCCASIONS,
   OCCASION_LABELS,
@@ -14,6 +15,36 @@ import {
   type Cuisine,
   type OccasionScoreWithRestaurant,
 } from "@/lib/types";
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://nyc-hype-index.vercel.app";
+
+export const metadata: Metadata = {
+  title: "The NYC Hype Index — Is it overrated?",
+  description:
+    "A weekly autopsy of NYC restaurant hype. We measure the gap between how viral a restaurant is on TikTok and Instagram, and what people who actually eat there say.",
+  openGraph: {
+    title: "The NYC Hype Index",
+    description:
+      "A weekly autopsy of NYC restaurant hype. The most overrated and quietly underrated places in NYC, ranked by data.",
+    type: "website",
+    url: SITE_URL,
+    images: [
+      {
+        url: `${SITE_URL}/api/og/digest`,
+        width: 1200,
+        height: 630,
+        alt: "The NYC Hype Index — This week's verdicts",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "The NYC Hype Index",
+    description:
+      "A weekly autopsy of NYC restaurant hype. The most overrated and quietly underrated NYC restaurants, ranked by data.",
+    images: [`${SITE_URL}/api/og/digest`],
+  },
+};
 
 export const revalidate = 3600;
 

@@ -1,5 +1,6 @@
 import { fetchRestaurantDetail } from "@/lib/queries";
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 import Link from "next/link";
 import SearchBar from "@/components/SearchBar";
 import { OCCASION_LABELS, CUISINE_LABELS, type Cuisine, type Occasion } from "@/lib/types";
@@ -7,9 +8,58 @@ import { OCCASION_LABELS, CUISINE_LABELS, type Cuisine, type Occasion } from "@/
 // Live-calculated restaurants need fresh data, can't pre-render
 export const dynamic = "force-dynamic";
 
-export default async function RestaurantPage({ params }: { params: { slug: string } }) {
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://nyc-hype-index.vercel.app";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { slug: string };
+}): Promise<Metadata> {
   const detail = await fetchRestaurantDetail(params.slug);
-  if (!detail) notFound();
+  if (!detail) {
+    return { title: "Restaurant — The NYC Hype Index" };
+  }
+  const { restaurant, display } = detail;
+  const isUnderrated = display?.is_underrated ?? false;
+  const verdict = isUnderrated ? "Underrated" : "Overrated";
+  const gap = display ? Math.abs(display.gap).toFixed(0) : "";
+
+  const title = display
+    ? `${restaurant.name}: ${verdict} ${isUnderrated ? "−" : "+"}${gap} — The NYC Hype Index`
+    : `${restaurant.name} — The NYC Hype Index`;
+
+  const description = display
+    ? `${restaurant.name} (${restaurant.neighborhood}) scored ${verdict.toLowerCase()} by ${isUnderrated ? "−" : "+"}${gap} this week. See the verdict.`
+    : `Track ${restaurant.name}'s hype gap on The NYC Hype Index.`;
+
+  const ogImage = `${SITE_URL}/api/og/restaurant?slug=${encodeURIComponent(params.slug)}`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `${SITE_URL}/restaurant/${params.slug}`,
+      images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [ogImage],
+    },
+  };
+}
+
+export default async function RestaurantPage({ params }: { params: { slug: string } }) {
+  console.log(`[RestaurantPage] params=${JSON.stringify(params)}, typeof slug=${typeof params.slug}, slug.length=${params.slug?.length}`);
+  const detail = await fetchRestaurantDetail(params.slug);
+  if (!detail) {
+    console.log(`[RestaurantPage] detail is null, calling notFound() for slug="${params.slug}"`);
+    notFound();
+  }
 
   const { restaurant, latest, display, occasionRankings } = detail;
   const hasScores = !!latest && !!display;

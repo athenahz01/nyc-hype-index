@@ -1,13 +1,41 @@
 import { fetchCuisineLeaderboard } from "@/lib/queries";
 import OccasionLeaderboard from "@/components/OccasionLeaderboard";
 import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CUISINES, CUISINE_LABELS, type Cuisine } from "@/lib/types";
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://nyc-hype-index.vercel.app";
 
 export const revalidate = 3600;
 
 export async function generateStaticParams() {
   return CUISINES.map((c) => ({ slug: c }));
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { slug: string };
+}): Promise<Metadata> {
+  const cuisine = params.slug as Cuisine;
+  if (!CUISINES.includes(cuisine)) return { title: "The NYC Hype Index" };
+  const label = CUISINE_LABELS[cuisine];
+  const title = `${label}, ranked by data — The NYC Hype Index`;
+  const description = `This week's most overrated and quietly underrated ${label} restaurants in NYC.`;
+  const ogImage = `${SITE_URL}/api/og/leaderboard?cuisine=${encodeURIComponent(cuisine)}`;
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `${SITE_URL}/cuisine/${cuisine}`,
+      images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
+    },
+    twitter: { card: "summary_large_image", title, description, images: [ogImage] },
+  };
 }
 
 export default async function CuisinePage({ params }: { params: { slug: string } }) {
